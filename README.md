@@ -1,5 +1,153 @@
 # GeoTouba — Portail SIG Déchets Organiques
-**Plateforme de cartographie interactive pour l'identification et la gestion des points de collecte des déchets organiques dans la ville de Touba, Sénégal**
+**Plateforme complète de cartographie interactive, application mobile terrain, alertes temps réel et exports QGIS pour la gestion des déchets organiques à Touba, Sénégal**
+
+---
+
+## 🌍 Vue d'ensemble du projet
+
+**GeoTouba** est une suite d'outils SIG comprenant :
+1. 🗺️ **Portail cartographique** — carte Leaflet interactive multi-couches
+2. 📱 **App mobile PWA** — interface terrain pour les agents de collecte
+3. 🔔 **Centre d'alertes** — notifications SMS/email/push temps réel
+4. 📥 **Export QGIS** — génération de fichiers GeoJSON/CSV compatibles QGIS
+
+---
+
+## 📱 Application mobile PWA Agent (`/agent`)
+
+### Fonctionnalités
+- **Installable sur l'écran d'accueil** (iOS + Android) via manifest.json
+- **Mode hors-ligne** — Service Worker + cache stratégique
+- **Bannière d'installation** automatique (beforeinstallprompt)
+- **3 onglets** : Tableau de bord / Liste des points / Profil agent
+
+### Actions terrain (bottom sheets)
+| Action | Description |
+|--------|-------------|
+| ♻️ Mettre à jour | Slider taux de remplissage 0-100% avec couleur dynamique |
+| ⚠️ Signaler | Problème terrain (débordement, dégradation, incendie…) |
+| 🚛 Confirmer collecte | Volume, qualité, destination (compostage/biogaz/tri) |
+| 📍 Ma position GPS | Coordonnées précises avec rayon de précision |
+
+### Alertes push
+- **Notification automatique** si taux ≥ 80% lors d'une mise à jour
+- **Vibration** sur mobile (pattern [200,100,200])
+- **Actions dans la notification** : Voir sur la carte / Fermer
+
+---
+
+## 🔔 Centre d'alertes (`/alertes`)
+
+### KPIs en temps réel
+- Bacs critiques (≥ 90%)
+- Bacs en alerte (≥ 80%)
+- Bacs normaux
+- Total points actifs
+
+### Canaux de notification configurables
+| Canal | Fournisseur | Usage |
+|-------|-------------|-------|
+| 📱 SMS | Twilio / Orange Money API | Alerte immédiate agents terrain |
+| 📧 Email | SMTP / Resend | Rapport coordinateurs |
+| 🔔 Push | Web Notifications API | App agent PWA |
+
+### Seuils configurables
+- Avertissement : slider 50-95% (défaut 80%)
+- Critique : slider 60-100% (défaut 90%)
+
+### Destinataires pré-configurés
+- Coordinateur SIG, Chef collecte, Comité Magal Environnement
+
+---
+
+## 📥 Export QGIS (`/export`)
+
+### Formats disponibles
+| Export | Format | Entités | Usage |
+|--------|--------|---------|-------|
+| Points de collecte | GeoJSON | 12 | Import QGIS direct |
+| Sources déchets | GeoJSON | 6 | Restaurants/Dahiras |
+| Projets valorisation | GeoJSON | 3 | WACA/ENDA/Magal |
+| Toutes couches | GeoJSON | 21 | Carte complète |
+| Points + attributs | CSV UTF-8 | 12 | Tableur + QGIS |
+| Alertes actives | CSV | Variable | Intervention terrain |
+
+### Système de coordonnées
+- **Export** : WGS84 (EPSG:4326)
+- **Reprojection recommandée** : UTM Zone 28N (EPSG:32628) pour analyses métriques
+
+### Guide d'import QGIS inclus (6 étapes)
+1. Télécharger GeoJSON → 2. Importer dans QGIS → 3. Reprojeter → 4. Symbologie gradée → 5. Fond OSM → 6. Export PDF
+
+---
+
+## 🔌 API REST complète
+
+| Endpoint | Méthode | Description |
+|----------|---------|-------------|
+| `/api/points-collecte` | GET | Liste avec filtres (type, statut, phase) |
+| `/api/points-collecte/:id` | GET | Détail d'un point |
+| `/api/restaurants` | GET | Sources de déchets |
+| `/api/projets` | GET | Projets de valorisation |
+| `/api/stats` | GET | Statistiques globales |
+| `/api/alertes` | GET | Bacs en alerte (≥ 80%) |
+| `/api/protocole-magal` | GET | Protocole 3 phases |
+| `/api/terrain/update` | POST | Mise à jour terrain |
+| `/api/terrain/signalement` | POST | Signalement problème |
+| `/api/notifications/test` | POST | Test SMS/email |
+| `/api/export/geojson` | GET | Export GeoJSON (?layer=) |
+| `/api/export/csv` | GET | Export CSV UTF-8 |
+| `/manifest.json` | GET | PWA manifest |
+| `/sw.js` | GET | Service Worker |
+
+---
+
+## 🗺️ Carte interactive (`/`)
+
+- 3 fonds : OSM / Satellite / Sombre
+- 12 points géoréférencés (GPS réels Touba)
+- 5 couches superposables
+- Filtres : type / statut / phase Magal
+- Fiche détaillée + export JSON par point
+- Protocole Magal (3 phases)
+- Tableau de bord statistiques
+- Navigation vers Agent / Alertes / QGIS
+
+---
+
+## 🚀 Stack technique
+
+| Composant | Technologie |
+|-----------|-------------|
+| Backend | Hono.js (TypeScript) |
+| Déploiement | Cloudflare Pages/Workers |
+| Cartographie | Leaflet.js 1.9.4 |
+| PWA | Web App Manifest + Service Worker |
+| Notifications | Web Notifications API + Push API |
+| Export SIG | GeoJSON / CSV (WGS84 EPSG:4326) |
+| Build | Vite 6 + @hono/vite-build |
+
+---
+
+## 🔧 Installation
+
+```bash
+git clone https://github.com/<votre-username>/geotouba.git
+cd geotouba && npm install
+npm run build
+pm2 start ecosystem.config.cjs
+open http://localhost:3000
+```
+
+---
+
+## 📋 Statut déploiement
+
+- **Plateforme** : Cloudflare Pages
+- **Statut** : ✅ Opérationnel
+- **Dernière mise à jour** : 2026-06-25
+- **Commits** : 3 (Initial → SIG Carte → PWA+Alertes+Export)
+
 
 ---
 
