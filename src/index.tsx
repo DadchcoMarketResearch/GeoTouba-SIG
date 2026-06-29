@@ -42,19 +42,45 @@ app.get('/api/projets', (c) => {
 // ─── API : Statistiques ─────────────────────────────────────────────────────
 app.get('/api/stats', (c) => {
   const points = getPointsCollecte()
+  const quartiers = getQuartiers()
   const actifs = points.filter((p) => p.statut === 'actif').length
   const capaciteTotale = points.reduce((s, p) => s + (p.capacite_m3 || 0), 0)
-  const remplissageMoyen =
-    points.reduce((s, p) => s + (p.taux_remplissage || 0), 0) / points.length
+  const pointsActifs = points.filter((p) => p.statut === 'actif')
+  const remplissageMoyen = pointsActifs.length
+    ? pointsActifs.reduce((s, p) => s + (p.taux_remplissage || 0), 0) / pointsActifs.length
+    : 0
+
+  // Stats par niveau de quartier
+  const byNiveau = {
+    historique: points.filter((p) => p.niveau_quartier === 'historique').length,
+    village: points.filter((p) => p.niveau_quartier === 'village').length,
+    peripherique: points.filter((p) => p.niveau_quartier === 'peripherique').length,
+  }
+
+  // Stats par type
+  const byType: Record<string, number> = {}
+  points.forEach((p) => {
+    byType[p.type] = (byType[p.type] || 0) + 1
+  })
 
   return c.json({
     success: true,
     data: {
       total_points: points.length,
       actifs,
-      inactifs: points.length - actifs,
+      inactifs: points.filter((p) => p.statut === 'inactif').length,
+      en_construction: points.filter((p) => p.statut === 'en_construction').length,
       capacite_totale_m3: Math.round(capaciteTotale * 10) / 10,
       remplissage_moyen_pct: Math.round(remplissageMoyen),
+      points_critiques: points.filter((p) => p.taux_remplissage >= 80).length,
+      total_quartiers: quartiers.length,
+      quartiers_par_niveau: {
+        historiques: quartiers.filter((q) => q.niveau === 'historique').length,
+        villages: quartiers.filter((q) => q.niveau === 'village').length,
+        peripheriques: quartiers.filter((q) => q.niveau === 'peripherique').length,
+      },
+      points_par_niveau: byNiveau,
+      points_par_type: byType,
       derniere_maj: new Date().toISOString(),
       phase_magal: getPhaseMagal(),
     },
@@ -64,6 +90,14 @@ app.get('/api/stats', (c) => {
 // ─── API : Protocole Magal ───────────────────────────────────────────────────
 app.get('/api/protocole-magal', (c) => {
   return c.json({ success: true, data: getProtocoleMagal() })
+})
+
+// ─── API : Quartiers ─────────────────────────────────────────────────────────
+app.get('/api/quartiers', (c) => {
+  const niveau = c.req.query('niveau')
+  let data = getQuartiers()
+  if (niveau) data = data.filter((q) => q.niveau === niveau)
+  return c.json({ success: true, count: data.length, data })
 })
 
 // ─── API : Mise à jour terrain (agent mobile) ────────────────────────────────
@@ -153,6 +187,7 @@ app.get('/api/export/geojson', (c) => {
     properties: { ...item, source_type: sourceType },
   })
 
+  const quartiers = getQuartiers()
   let features: any[] = []
   if (layer === 'all' || layer === 'points') {
     features = features.concat(points.map((p) => makeFeature(p, 'point_collecte')))
@@ -162,6 +197,9 @@ app.get('/api/export/geojson', (c) => {
   }
   if (layer === 'all' || layer === 'projets') {
     features = features.concat(projets.map((p) => makeFeature(p, 'projet_valorisation')))
+  }
+  if (layer === 'all' || layer === 'quartiers') {
+    features = features.concat(quartiers.map((q) => makeFeature(q, 'quartier')))
   }
 
   const geojson = {
@@ -187,7 +225,7 @@ app.get('/api/export/geojson', (c) => {
 // ─── API : Export CSV ─────────────────────────────────────────────────────────
 app.get('/api/export/csv', (c) => {
   const points = getPointsCollecte()
-  const headers = ['id','nom','type','statut','lat','lng','adresse','quartier','capacite_m3','taux_remplissage','frequence_collecte','responsable','derniere_collecte','prochaine_collecte','coordonnees_gps']
+  const headers = ['id','nom','type','statut','lat','lng','adresse','quartier','niveau_quartier','capacite_m3','taux_remplissage','frequence_collecte','responsable','derniere_collecte','prochaine_collecte','coordonnees_gps','notes']
   const rows = points.map((p) =>
     headers.map((h) => {
       const val = (p as any)[h]
@@ -244,123 +282,114 @@ function getPhaseMagal(): string {
   return 'normale'
 }
 
+// ─── Données quartiers ────────────────────────────────────────────────────────
+function getQuartiers() {
+  return [
+    // ── Niveau 1 : 13 quartiers historiques et administratifs ──
+    { id: 'q01', nom: 'Darou Khoudoss',    niveau: 'historique', lat: 14.8730, lng: -15.8810, population_est: 45000, superficie_km2: 2.1 },
+    { id: 'q02', nom: 'Gouye Mbind',       niveau: 'historique', lat: 14.8620, lng: -15.8840, population_est: 28000, superficie_km2: 1.5 },
+    { id: 'q03', nom: 'Darou Miname',      niveau: 'historique', lat: 14.8790, lng: -15.8760, population_est: 32000, superficie_km2: 1.8 },
+    { id: 'q04', nom: 'Touba Guédé',       niveau: 'historique', lat: 14.8580, lng: -15.8650, population_est: 25000, superficie_km2: 1.6 },
+    { id: 'q05', nom: 'Touba Mosquée',     niveau: 'historique', lat: 14.8695, lng: -15.8820, population_est: 60000, superficie_km2: 1.2 },
+    { id: 'q06', nom: 'Keur Niang',        niveau: 'historique', lat: 14.8570, lng: -15.8920, population_est: 22000, superficie_km2: 2.5 },
+    { id: 'q07', nom: 'Khaira',            niveau: 'historique', lat: 14.8840, lng: -15.8740, population_est: 18000, superficie_km2: 1.4 },
+    { id: 'q08', nom: 'Guédé Bousso',      niveau: 'historique', lat: 14.8760, lng: -15.8680, population_est: 20000, superficie_km2: 1.7 },
+    { id: 'q09', nom: 'Samer',             niveau: 'historique', lat: 14.8640, lng: -15.8720, population_est: 30000, superficie_km2: 1.9 },
+    { id: 'q10', nom: 'Darou Marnane',     niveau: 'historique', lat: 14.8780, lng: -15.8700, population_est: 35000, superficie_km2: 2.0 },
+    { id: 'q11', nom: 'Ndame',             niveau: 'historique', lat: 14.8710, lng: -15.8640, population_est: 16000, superficie_km2: 1.3 },
+    { id: 'q12', nom: 'Madiyana',          niveau: 'historique', lat: 14.8650, lng: -15.8600, population_est: 24000, superficie_km2: 2.2 },
+    { id: 'q13', nom: 'Dianatoul Mahwa',   niveau: 'historique', lat: 14.8600, lng: -15.8780, population_est: 19000, superficie_km2: 1.6 },
+    // ── Niveau 2 : 25 villages en zone urbaine ──
+    { id: 'v01', nom: 'Alia',                     niveau: 'village', lat: 14.8820, lng: -15.8860, population_est: 8000,  superficie_km2: 0.8 },
+    { id: 'v02', nom: 'Arifina',                  niveau: 'village', lat: 14.8750, lng: -15.8900, population_est: 9500,  superficie_km2: 0.9 },
+    { id: 'v03', nom: 'Boukhatoul Moubarak',       niveau: 'village', lat: 14.8680, lng: -15.8950, population_est: 11000, superficie_km2: 1.1 },
+    { id: 'v04', nom: 'Boustanoul',               niveau: 'village', lat: 14.8720, lng: -15.8760, population_est: 7500,  superficie_km2: 0.7 },
+    { id: 'v05', nom: 'Darou Alimoul Khabir',      niveau: 'village', lat: 14.8800, lng: -15.8800, population_est: 12000, superficie_km2: 1.0 },
+    { id: 'v06', nom: 'Darou Khadim',             niveau: 'village', lat: 14.8660, lng: -15.8840, population_est: 14000, superficie_km2: 1.2 },
+    { id: 'v07', nom: 'Darou Marnane 2',           niveau: 'village', lat: 14.8800, lng: -15.8680, population_est: 10000, superficie_km2: 1.0 },
+    { id: 'v08', nom: 'Darou Salam Ndame',         niveau: 'village', lat: 14.8690, lng: -15.8620, population_est: 9000,  superficie_km2: 0.9 },
+    { id: 'v09', nom: 'Ndindy Abdou',             niveau: 'village', lat: 14.8740, lng: -15.8580, population_est: 7000,  superficie_km2: 0.8 },
+    { id: 'v10', nom: 'Ndamatou 1',               niveau: 'village', lat: 14.8680, lng: -15.8680, population_est: 18000, superficie_km2: 1.5 },
+    { id: 'v11', nom: 'Route de Darou Mousty',     niveau: 'village', lat: 14.8550, lng: -15.8550, population_est: 13000, superficie_km2: 2.0 },
+    { id: 'v12', nom: 'Same Lah',                 niveau: 'village', lat: 14.8640, lng: -15.8730, population_est: 11000, superficie_km2: 1.0 },
+    { id: 'v13', nom: 'Touba Al Azhar',           niveau: 'village', lat: 14.8590, lng: -15.8700, population_est: 15000, superficie_km2: 1.3 },
+    { id: 'v14', nom: 'Touba HLM',               niveau: 'village', lat: 14.8760, lng: -15.8550, population_est: 22000, superficie_km2: 1.8 },
+    // ── Niveau 3 : Quartiers périphériques ──
+    { id: 'p01', nom: 'Mbacké Bâri',   niveau: 'peripherique', lat: 14.8510, lng: -15.8400, population_est: 8000,  superficie_km2: 3.0 },
+    { id: 'p02', nom: 'Touba Wadane',  niveau: 'peripherique', lat: 14.8900, lng: -15.8700, population_est: 12000, superficie_km2: 2.5 },
+    { id: 'p03', nom: 'Diakhaye',      niveau: 'peripherique', lat: 14.8480, lng: -15.8600, population_est: 6000,  superficie_km2: 2.0 },
+    { id: 'p04', nom: 'NDindy',        niveau: 'peripherique', lat: 14.8830, lng: -15.8580, population_est: 7500,  superficie_km2: 1.5 },
+    { id: 'p05', nom: 'Taif',          niveau: 'peripherique', lat: 14.8460, lng: -15.8750, population_est: 9000,  superficie_km2: 2.2 },
+    { id: 'p06', nom: 'Bélel',         niveau: 'peripherique', lat: 14.8540, lng: -15.8480, population_est: 5000,  superficie_km2: 1.8 },
+    { id: 'p07', nom: 'Sourah',        niveau: 'peripherique', lat: 14.8920, lng: -15.8600, population_est: 6500,  superficie_km2: 1.7 },
+    { id: 'p08', nom: 'Mbal',          niveau: 'peripherique', lat: 14.8430, lng: -15.8900, population_est: 5500,  superficie_km2: 2.0 },
+    { id: 'p09', nom: 'Touba Ndiarème',niveau: 'peripherique', lat: 14.8880, lng: -15.8550, population_est: 8000,  superficie_km2: 1.6 },
+    { id: 'p10', nom: 'Loyène',        niveau: 'peripherique', lat: 14.8480, lng: -15.8980, population_est: 4500,  superficie_km2: 2.5 },
+    { id: 'p11', nom: 'Kenya',         niveau: 'peripherique', lat: 14.8950, lng: -15.8750, population_est: 7000,  superficie_km2: 1.9 },
+    { id: 'p12', nom: 'Djibock',       niveau: 'peripherique', lat: 14.8400, lng: -15.8700, population_est: 5000,  superficie_km2: 2.8 },
+    { id: 'p13', nom: 'Lyndiane',      niveau: 'peripherique', lat: 14.8560, lng: -15.9050, population_est: 6000,  superficie_km2: 2.1 },
+    { id: 'p14', nom: 'Diabir',        niveau: 'peripherique', lat: 14.8950, lng: -15.8450, population_est: 5500,  superficie_km2: 1.8 },
+    { id: 'p15', nom: 'Touba Bagdad',  niveau: 'peripherique', lat: 14.8610, lng: -15.8570, population_est: 10000, superficie_km2: 1.5 },
+  ]
+}
+
 function getPointsCollecte() {
   return [
-    // ─── BACS À ORDURES CENTRAUX ────────────────────────────────────────
+    // ══════════════════════════════════════════════════════════════
+    // ZONE CENTRALE — Touba Mosquée / Darou Khoudoss (priorité max)
+    // ══════════════════════════════════════════════════════════════
     {
       id: 1,
-      nom: 'Bac Central Marché Ocas',
-      type: 'bac_ordures',
-      statut: 'actif',
-      lat: 14.8658,
-      lng: -15.878,
-      adresse: 'Marché Ocas, Touba',
-      quartier: 'Centre Touba',
-      capacite_m3: 8,
-      taux_remplissage: 72,
-      frequence_collecte: 'Quotidienne',
-      responsable: 'Mairie de Touba',
-      phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
-      derniere_collecte: '2026-06-24 06:30',
-      prochaine_collecte: '2026-06-25 06:30',
-      types_dechets: ['Déchets alimentaires', 'Résidus végétaux', 'Déchets de marché'],
-      coordonnees_gps: '14.8658°N, 15.8780°W',
-      photos: [],
-      notes: 'Point stratégique proche du grand marché. Saturation fréquente lors du Magal.',
-    },
-    {
-      id: 2,
-      nom: 'Bac Mosquée Serigne Touba',
+      nom: 'Bac Central Grande Mosquée',
       type: 'bac_ordures',
       statut: 'actif',
       lat: 14.8696,
       lng: -15.8814,
-      adresse: 'Proximité Grande Mosquée, Touba',
-      quartier: 'Darou Khoudoss',
-      capacite_m3: 12,
-      taux_remplissage: 58,
-      frequence_collecte: '2x/jour (Magal)',
+      adresse: 'Esplanade Nord Grande Mosquée',
+      quartier: 'Touba Mosquée',
+      niveau_quartier: 'historique',
+      capacite_m3: 15,
+      taux_remplissage: 68,
+      frequence_collecte: '3x/jour (Magal) / Quotidienne (normale)',
       responsable: 'Dahira Matlaboul Fawzaïni',
       phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
       derniere_collecte: '2026-06-24 08:00',
       prochaine_collecte: '2026-06-24 20:00',
       types_dechets: ['Déchets alimentaires', 'Restes de repas communautaires'],
       coordonnees_gps: '14.8696°N, 15.8814°W',
-      photos: [],
-      notes: 'Zone à très haute densité lors du Magal. Renforcement prévu x3.',
+      notes: 'Zone à très haute densité lors du Magal. Renforcement x3 prévu.',
+    },
+    {
+      id: 2,
+      nom: 'Bac Esplanade Sud Mosquée',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8680,
+      lng: -15.8820,
+      adresse: 'Esplanade Sud Grande Mosquée',
+      quartier: 'Touba Mosquée',
+      niveau_quartier: 'historique',
+      capacite_m3: 12,
+      taux_remplissage: 74,
+      frequence_collecte: '2x/jour',
+      responsable: 'Dahira Matlaboul Fawzaïni',
+      phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
+      derniere_collecte: '2026-06-24 07:00',
+      prochaine_collecte: '2026-06-24 19:00',
+      types_dechets: ['Déchets daharas', 'Résidus de cuisine communautaire'],
+      coordonnees_gps: '14.8680°N, 15.8820°W',
+      notes: 'Flux organique très important lors des zawiyahs et cérémonies.',
     },
     {
       id: 3,
-      nom: 'Point Collecte Darou Marnane',
-      type: 'point_apport_volontaire',
-      statut: 'actif',
-      lat: 14.876,
-      lng: -15.872,
-      adresse: 'Quartier Darou Marnane',
-      quartier: 'Darou Marnane',
-      capacite_m3: 5,
-      taux_remplissage: 45,
-      frequence_collecte: '3x/semaine',
-      responsable: 'Comité de Quartier',
-      phase_active: ['normale', 'pre-magal', 'magal'],
-      derniere_collecte: '2026-06-23 07:00',
-      prochaine_collecte: '2026-06-25 07:00',
-      types_dechets: ['Déchets ménagers organiques', 'Résidus de cuisine'],
-      coordonnees_gps: '14.8760°N, 15.8720°W',
-      photos: [],
-      notes: 'Géré par les habitants. Bonne pratique de tri à la source.',
-    },
-    {
-      id: 4,
-      nom: 'Bac Quartier Gouye Mbind',
-      type: 'bac_ordures',
-      statut: 'actif',
-      lat: 14.862,
-      lng: -15.884,
-      adresse: 'Rue principale, Gouye Mbind',
-      quartier: 'Gouye Mbind',
-      capacite_m3: 6,
-      taux_remplissage: 83,
-      frequence_collecte: 'Quotidienne',
-      responsable: 'CADAK-CAR',
-      phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
-      derniere_collecte: '2026-06-24 05:00',
-      prochaine_collecte: '2026-06-25 05:00',
-      types_dechets: ['Ordures ménagères', 'Déchets organiques', 'Résidus animaux'],
-      coordonnees_gps: '14.8620°N, 15.8840°W',
-      photos: [],
-      notes: 'Taux de remplissage élevé. Nécessite passage supplémentaire.',
-    },
-    {
-      id: 5,
-      nom: 'Plateforme Compostage Keur Niang',
-      type: 'plateforme_compostage',
-      statut: 'actif',
-      lat: 14.858,
-      lng: -15.892,
-      adresse: 'Zone périphérique, Keur Niang',
-      quartier: 'Keur Niang',
-      capacite_m3: 120,
-      taux_remplissage: 35,
-      frequence_collecte: 'Hebdomadaire',
-      responsable: 'Projet WACA / ONG Green Touba',
-      phase_active: ['normale', 'post-magal'],
-      derniere_collecte: '2026-06-21 08:00',
-      prochaine_collecte: '2026-06-28 08:00',
-      types_dechets: ['Déchets verts', 'Matières organiques', 'Fumier animal'],
-      coordonnees_gps: '14.8580°N, 15.8920°W',
-      photos: [],
-      notes: 'Site de valorisation compost. Production ~2 tonnes/semaine. Vente aux maraîchers.',
-    },
-    {
-      id: 6,
-      nom: 'Centre Tri Darou Khoudoss',
+      nom: 'Centre Tri Principal Darou Khoudoss',
       type: 'centre_tri',
       statut: 'actif',
-      lat: 14.874,
-      lng: -15.879,
+      lat: 14.8740,
+      lng: -15.8790,
       adresse: 'Route de Mbacké, Darou Khoudoss',
       quartier: 'Darou Khoudoss',
+      niveau_quartier: 'historique',
       capacite_m3: 80,
       taux_remplissage: 50,
       frequence_collecte: 'Quotidienne',
@@ -370,39 +399,63 @@ function getPointsCollecte() {
       prochaine_collecte: '2026-06-25 04:00',
       types_dechets: ['Tous types après tri', 'Fraction organique séparée'],
       coordonnees_gps: '14.8740°N, 15.8790°W',
-      photos: [],
-      notes: 'Centre principal de tri. Capacité de tri : 30 tonnes/jour.',
+      notes: 'Centre principal de tri. Capacité : 30 tonnes/jour.',
     },
     {
-      id: 7,
-      nom: 'Bac Quartier Ndamatou',
-      type: 'bac_ordures',
-      statut: 'inactif',
-      lat: 14.868,
-      lng: -15.868,
-      adresse: 'Ndamatou Nord',
-      quartier: 'Ndamatou',
-      capacite_m3: 4,
-      taux_remplissage: 0,
-      frequence_collecte: 'En maintenance',
-      responsable: 'Mairie de Touba',
-      phase_active: ['pre-magal', 'magal'],
-      derniere_collecte: '2026-06-20 06:00',
-      prochaine_collecte: 'Après maintenance',
-      types_dechets: ['Déchets ménagers organiques'],
-      coordonnees_gps: '14.8680°N, 15.8680°W',
-      photos: [],
-      notes: 'En maintenance. Remise en service prévue avant le Magal.',
-    },
-    {
-      id: 8,
-      nom: 'Point Collecte Gare Routière',
+      id: 4,
+      nom: 'Bac Darou Khoudoss Nord',
       type: 'bac_ordures',
       statut: 'actif',
-      lat: 14.872,
-      lng: -15.875,
+      lat: 14.8720,
+      lng: -15.8800,
+      adresse: 'Rue des Daharas, Darou Khoudoss',
+      quartier: 'Darou Khoudoss',
+      niveau_quartier: 'historique',
+      capacite_m3: 8,
+      taux_remplissage: 58,
+      frequence_collecte: 'Quotidienne',
+      responsable: 'CADAK-CAR',
+      phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
+      derniere_collecte: '2026-06-24 06:00',
+      prochaine_collecte: '2026-06-25 06:00',
+      types_dechets: ['Déchets ménagers', 'Résidus daharas'],
+      coordonnees_gps: '14.8720°N, 15.8800°W',
+      notes: 'Secteur dense avec nombreuses daharas.',
+    },
+    // ══════════════════════════════════════════════════════════════
+    // CENTRE COMMERCIAL — Marché / Gare Routière
+    // ══════════════════════════════════════════════════════════════
+    {
+      id: 5,
+      nom: 'Bac Central Marché Ocas',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8658,
+      lng: -15.8780,
+      adresse: 'Marché Ocas, entrée principale',
+      quartier: 'Samer',
+      niveau_quartier: 'historique',
+      capacite_m3: 10,
+      taux_remplissage: 72,
+      frequence_collecte: 'Quotidienne',
+      responsable: 'Mairie de Touba',
+      phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
+      derniere_collecte: '2026-06-24 06:30',
+      prochaine_collecte: '2026-06-25 06:30',
+      types_dechets: ['Déchets alimentaires', 'Résidus végétaux', 'Déchets de marché'],
+      coordonnees_gps: '14.8658°N, 15.8780°W',
+      notes: 'Point stratégique. Saturation fréquente lors du Magal.',
+    },
+    {
+      id: 6,
+      nom: 'Bac Gare Routière',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8720,
+      lng: -15.8750,
       adresse: 'Gare Routière de Touba',
-      quartier: 'Centre Touba',
+      quartier: 'Samer',
+      niveau_quartier: 'historique',
       capacite_m3: 10,
       taux_remplissage: 91,
       frequence_collecte: '2x/jour',
@@ -410,62 +463,977 @@ function getPointsCollecte() {
       phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
       derniere_collecte: '2026-06-24 10:00',
       prochaine_collecte: '2026-06-24 22:00',
-      types_dechets: ['Déchets de voyage', 'Restes alimentaires', 'Déchets divers'],
+      types_dechets: ['Déchets de voyage', 'Restes alimentaires'],
       coordonnees_gps: '14.8720°N, 15.8750°W',
-      photos: [],
-      notes: 'CRITIQUE : Saturation quasi-permanente. Passage urgent nécessaire.',
+      notes: 'CRITIQUE : Saturation quasi-permanente. Passage urgent requis.',
+    },
+    {
+      id: 7,
+      nom: 'PAV Marché Samer',
+      type: 'point_apport_volontaire',
+      statut: 'actif',
+      lat: 14.8645,
+      lng: -15.8760,
+      adresse: 'Derrière marché Samer',
+      quartier: 'Samer',
+      niveau_quartier: 'historique',
+      capacite_m3: 6,
+      taux_remplissage: 55,
+      frequence_collecte: 'Quotidienne',
+      responsable: 'GIE Collecte Samer',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-24 07:00',
+      prochaine_collecte: '2026-06-25 07:00',
+      types_dechets: ['Déchets marchands organiques', 'Résidus végétaux'],
+      coordonnees_gps: '14.8645°N, 15.8760°W',
+      notes: 'Géré par GIE local. Bonne organisation de tri.',
+    },
+    // ══════════════════════════════════════════════════════════════
+    // GOUYE MBIND
+    // ══════════════════════════════════════════════════════════════
+    {
+      id: 8,
+      nom: 'Bac Principal Gouye Mbind',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8620,
+      lng: -15.8840,
+      adresse: 'Rue principale, Gouye Mbind',
+      quartier: 'Gouye Mbind',
+      niveau_quartier: 'historique',
+      capacite_m3: 8,
+      taux_remplissage: 83,
+      frequence_collecte: 'Quotidienne',
+      responsable: 'CADAK-CAR',
+      phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
+      derniere_collecte: '2026-06-24 05:00',
+      prochaine_collecte: '2026-06-25 05:00',
+      types_dechets: ['Ordures ménagères', 'Déchets organiques', 'Résidus animaux'],
+      coordonnees_gps: '14.8620°N, 15.8840°W',
+      notes: 'Taux élevé — passage supplémentaire nécessaire.',
     },
     {
       id: 9,
-      nom: 'Bac Marché Bétail Touba',
-      type: 'bac_ordures',
-      statut: 'actif',
-      lat: 14.856,
-      lng: -15.871,
-      adresse: 'Marché à bétail, périphérie Sud',
-      quartier: 'Sud Touba',
-      capacite_m3: 15,
-      taux_remplissage: 62,
-      frequence_collecte: 'Quotidienne',
-      responsable: 'Services Vétérinaires + Mairie',
-      phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
-      derniere_collecte: '2026-06-24 07:30',
-      prochaine_collecte: '2026-06-25 07:30',
-      types_dechets: ['Fumier', 'Résidus organiques animaux', 'Déchets verts'],
-      coordonnees_gps: '14.8560°N, 15.8710°W',
-      photos: [],
-      notes: 'Source importante de biomasse valorisable pour le biogaz.',
-    },
-    {
-      id: 10,
-      nom: 'Point PAV Université Touba',
+      nom: 'PAV Gouye Mbind Est',
       type: 'point_apport_volontaire',
       statut: 'actif',
-      lat: 14.882,
-      lng: -15.869,
-      adresse: 'Campus Université Cheikhoul Khadim',
-      quartier: 'Nord Touba',
-      capacite_m3: 3,
-      taux_remplissage: 28,
+      lat: 14.8610,
+      lng: -15.8820,
+      adresse: 'Carrefour Est, Gouye Mbind',
+      quartier: 'Gouye Mbind',
+      niveau_quartier: 'historique',
+      capacite_m3: 4,
+      taux_remplissage: 60,
       frequence_collecte: '3x/semaine',
-      responsable: 'Club Environnement UCK',
-      phase_active: ['normale'],
-      derniere_collecte: '2026-06-23 12:00',
-      prochaine_collecte: '2026-06-25 12:00',
-      types_dechets: ['Déchets de restauration universitaire', 'Résidus organiques'],
-      coordonnees_gps: '14.8820°N, 15.8690°W',
-      photos: [],
-      notes: "Initiative étudiante. Lié au projet de jardin compost de l'université.",
+      responsable: 'Comité de Quartier Gouye Mbind',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-23 07:00',
+      prochaine_collecte: '2026-06-25 07:00',
+      types_dechets: ['Déchets ménagers organiques'],
+      coordonnees_gps: '14.8610°N, 15.8820°W',
+      notes: 'Initiative communautaire.',
+    },
+    // ══════════════════════════════════════════════════════════════
+    // DAROU MARNANE
+    // ══════════════════════════════════════════════════════════════
+    {
+      id: 10,
+      nom: 'Bac Darou Marnane Centre',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8780,
+      lng: -15.8700,
+      adresse: 'Avenue centrale, Darou Marnane',
+      quartier: 'Darou Marnane',
+      niveau_quartier: 'historique',
+      capacite_m3: 6,
+      taux_remplissage: 48,
+      frequence_collecte: 'Quotidienne',
+      responsable: 'Mairie de Touba',
+      phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
+      derniere_collecte: '2026-06-24 06:00',
+      prochaine_collecte: '2026-06-25 06:00',
+      types_dechets: ['Déchets ménagers', 'Résidus de cuisine'],
+      coordonnees_gps: '14.8780°N, 15.8700°W',
+      notes: 'Quartier historique bien organisé.',
     },
     {
       id: 11,
-      nom: 'Unité Biogaz Mbacké Road',
+      nom: 'PAV Darou Marnane Mosquée',
+      type: 'point_apport_volontaire',
+      statut: 'actif',
+      lat: 14.8765,
+      lng: -15.8715,
+      adresse: 'Mosquée de quartier, Darou Marnane',
+      quartier: 'Darou Marnane',
+      niveau_quartier: 'historique',
+      capacite_m3: 3,
+      taux_remplissage: 35,
+      frequence_collecte: '3x/semaine',
+      responsable: 'Dahira Darou Marnane',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-23 07:00',
+      prochaine_collecte: '2026-06-25 07:00',
+      types_dechets: ['Déchets religieux', 'Résidus cuisine collective'],
+      coordonnees_gps: '14.8765°N, 15.8715°W',
+      notes: 'Géré par les fidèles. Tri à la source pratiqué.',
+    },
+    {
+      id: 12,
+      nom: 'Bac Darou Marnane 2',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8800,
+      lng: -15.8680,
+      adresse: 'Extension Darou Marnane 2',
+      quartier: 'Darou Marnane',
+      niveau_quartier: 'historique',
+      capacite_m3: 5,
+      taux_remplissage: 42,
+      frequence_collecte: '3x/semaine',
+      responsable: 'Comité de quartier',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-23 07:30',
+      prochaine_collecte: '2026-06-25 07:30',
+      types_dechets: ['Déchets ménagers'],
+      coordonnees_gps: '14.8800°N, 15.8680°W',
+      notes: 'Nouveau secteur résidentiel.',
+    },
+    // ══════════════════════════════════════════════════════════════
+    // DAROU MINAME
+    // ══════════════════════════════════════════════════════════════
+    {
+      id: 13,
+      nom: 'Bac Darou Miname Centre',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8790,
+      lng: -15.8760,
+      adresse: 'Carrefour central, Darou Miname',
+      quartier: 'Darou Miname',
+      niveau_quartier: 'historique',
+      capacite_m3: 7,
+      taux_remplissage: 62,
+      frequence_collecte: 'Quotidienne',
+      responsable: 'Mairie de Touba',
+      phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
+      derniere_collecte: '2026-06-24 06:30',
+      prochaine_collecte: '2026-06-25 06:30',
+      types_dechets: ['Ordures ménagères', 'Déchets de cuisine'],
+      coordonnees_gps: '14.8790°N, 15.8760°W',
+      notes: 'Secteur résidentiel dense.',
+    },
+    {
+      id: 14,
+      nom: 'PAV Darou Miname École',
+      type: 'point_apport_volontaire',
+      statut: 'actif',
+      lat: 14.8805,
+      lng: -15.8745,
+      adresse: 'École élémentaire Darou Miname',
+      quartier: 'Darou Miname',
+      niveau_quartier: 'historique',
+      capacite_m3: 2,
+      taux_remplissage: 28,
+      frequence_collecte: '2x/semaine',
+      responsable: 'APE Darou Miname',
+      phase_active: ['normale'],
+      derniere_collecte: '2026-06-23 08:00',
+      prochaine_collecte: '2026-06-26 08:00',
+      types_dechets: ['Déchets scolaires organiques'],
+      coordonnees_gps: '14.8805°N, 15.8745°W',
+      notes: 'Initiative des parents. Sensibilisation des enfants.',
+    },
+    // ══════════════════════════════════════════════════════════════
+    // KHAIRA / GUÉDÉ BOUSSO
+    // ══════════════════════════════════════════════════════════════
+    {
+      id: 15,
+      nom: 'Bac Khaira Principal',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8840,
+      lng: -15.8740,
+      adresse: 'Rue centrale, Khaira',
+      quartier: 'Khaira',
+      niveau_quartier: 'historique',
+      capacite_m3: 6,
+      taux_remplissage: 55,
+      frequence_collecte: 'Quotidienne',
+      responsable: 'CADAK-CAR',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-24 06:00',
+      prochaine_collecte: '2026-06-25 06:00',
+      types_dechets: ['Ordures ménagères', 'Résidus organiques'],
+      coordonnees_gps: '14.8840°N, 15.8740°W',
+      notes: 'Quartier en expansion.',
+    },
+    {
+      id: 16,
+      nom: 'Bac Guédé Bousso Centre',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8760,
+      lng: -15.8680,
+      adresse: 'Avenue principale, Guédé Bousso',
+      quartier: 'Guédé Bousso',
+      niveau_quartier: 'historique',
+      capacite_m3: 6,
+      taux_remplissage: 49,
+      frequence_collecte: '3x/semaine',
+      responsable: 'Comité de quartier',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-23 07:00',
+      prochaine_collecte: '2026-06-25 07:00',
+      types_dechets: ['Déchets ménagers organiques'],
+      coordonnees_gps: '14.8760°N, 15.8680°W',
+      notes: 'Bonne gestion communautaire.',
+    },
+    // ══════════════════════════════════════════════════════════════
+    // TOUBA GUÉDÉ / NDAME / MADIYANA / DIANATOUL MAHWA
+    // ══════════════════════════════════════════════════════════════
+    {
+      id: 17,
+      nom: 'Bac Touba Guédé',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8580,
+      lng: -15.8650,
+      adresse: 'Rue principale, Touba Guédé',
+      quartier: 'Touba Guédé',
+      niveau_quartier: 'historique',
+      capacite_m3: 5,
+      taux_remplissage: 44,
+      frequence_collecte: '3x/semaine',
+      responsable: 'Mairie de Touba',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-23 07:00',
+      prochaine_collecte: '2026-06-25 07:00',
+      types_dechets: ['Ordures ménagères'],
+      coordonnees_gps: '14.8580°N, 15.8650°W',
+      notes: 'Zone péricentrale à renforcer.',
+    },
+    {
+      id: 18,
+      nom: 'Bac Ndame Résidentiel',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8710,
+      lng: -15.8640,
+      adresse: 'Zone résidentielle Ndame',
+      quartier: 'Ndame',
+      niveau_quartier: 'historique',
+      capacite_m3: 4,
+      taux_remplissage: 38,
+      frequence_collecte: '3x/semaine',
+      responsable: 'GIE Ndame',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-23 07:30',
+      prochaine_collecte: '2026-06-25 07:30',
+      types_dechets: ['Déchets ménagers'],
+      coordonnees_gps: '14.8710°N, 15.8640°W',
+      notes: 'Quartier calme bien entretenu.',
+    },
+    {
+      id: 19,
+      nom: 'Bac Madiyana Centre',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8650,
+      lng: -15.8600,
+      adresse: 'Avenue Madiyana',
+      quartier: 'Madiyana',
+      niveau_quartier: 'historique',
+      capacite_m3: 6,
+      taux_remplissage: 52,
+      frequence_collecte: 'Quotidienne',
+      responsable: 'CADAK-CAR',
+      phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
+      derniere_collecte: '2026-06-24 07:00',
+      prochaine_collecte: '2026-06-25 07:00',
+      types_dechets: ['Ordures ménagères', 'Résidus de cuisine'],
+      coordonnees_gps: '14.8650°N, 15.8600°W',
+      notes: 'Zone en développement.',
+    },
+    {
+      id: 20,
+      nom: 'Bac Dianatoul Mahwa',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8600,
+      lng: -15.8780,
+      adresse: 'Rue centrale, Dianatoul Mahwa',
+      quartier: 'Dianatoul Mahwa',
+      niveau_quartier: 'historique',
+      capacite_m3: 5,
+      taux_remplissage: 47,
+      frequence_collecte: '3x/semaine',
+      responsable: 'Dahira Dianatoul Mahwa',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-23 07:00',
+      prochaine_collecte: '2026-06-25 07:00',
+      types_dechets: ['Déchets ménagers', 'Résidus daharas'],
+      coordonnees_gps: '14.8600°N, 15.8780°W',
+      notes: 'Implication forte de la dahira locale.',
+    },
+    // ══════════════════════════════════════════════════════════════
+    // KEUR NIANG — Sites de valorisation
+    // ══════════════════════════════════════════════════════════════
+    {
+      id: 21,
+      nom: 'Plateforme Compostage Keur Niang',
+      type: 'plateforme_compostage',
+      statut: 'actif',
+      lat: 14.8570,
+      lng: -15.8920,
+      adresse: 'Zone périphérique, Keur Niang',
+      quartier: 'Keur Niang',
+      niveau_quartier: 'historique',
+      capacite_m3: 120,
+      taux_remplissage: 35,
+      frequence_collecte: 'Hebdomadaire',
+      responsable: 'Projet WACA / ONG Green Touba',
+      phase_active: ['normale', 'post-magal'],
+      derniere_collecte: '2026-06-21 08:00',
+      prochaine_collecte: '2026-06-28 08:00',
+      types_dechets: ['Déchets verts', 'Matières organiques', 'Fumier animal'],
+      coordonnees_gps: '14.8570°N, 15.8920°W',
+      notes: 'Production ~2 tonnes de compost/semaine. Vente aux maraîchers.',
+    },
+    {
+      id: 22,
+      nom: 'Bac Keur Niang Village',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8560,
+      lng: -15.8905,
+      adresse: 'Centre village Keur Niang',
+      quartier: 'Keur Niang',
+      niveau_quartier: 'historique',
+      capacite_m3: 5,
+      taux_remplissage: 40,
+      frequence_collecte: '3x/semaine',
+      responsable: 'Comité de village',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-23 08:00',
+      prochaine_collecte: '2026-06-25 08:00',
+      types_dechets: ['Déchets ménagers', 'Résidus maraîchage'],
+      coordonnees_gps: '14.8560°N, 15.8905°W',
+      notes: 'Lié à la plateforme compostage voisine.',
+    },
+    // ══════════════════════════════════════════════════════════════
+    // VILLAGES EN ZONE URBAINE
+    // ══════════════════════════════════════════════════════════════
+    {
+      id: 23,
+      nom: 'Bac Darou Khadim',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8660,
+      lng: -15.8840,
+      adresse: 'Rue principale, Darou Khadim',
+      quartier: 'Darou Khadim',
+      niveau_quartier: 'village',
+      capacite_m3: 6,
+      taux_remplissage: 65,
+      frequence_collecte: 'Quotidienne',
+      responsable: 'CADAK-CAR',
+      phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
+      derniere_collecte: '2026-06-24 07:00',
+      prochaine_collecte: '2026-06-25 07:00',
+      types_dechets: ['Ordures ménagères', 'Résidus cuisines dahiras'],
+      coordonnees_gps: '14.8660°N, 15.8840°W',
+      notes: 'Village dense proche du centre.',
+    },
+    {
+      id: 24,
+      nom: 'Bac Boukhatoul Moubarak',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8680,
+      lng: -15.8950,
+      adresse: 'Avenue Boukhatoul Moubarak',
+      quartier: 'Boukhatoul Moubarak',
+      niveau_quartier: 'village',
+      capacite_m3: 8,
+      taux_remplissage: 71,
+      frequence_collecte: 'Quotidienne',
+      responsable: 'Mairie de Touba',
+      phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
+      derniere_collecte: '2026-06-24 06:30',
+      prochaine_collecte: '2026-06-25 06:30',
+      types_dechets: ['Déchets ménagers', 'Résidus organiques'],
+      coordonnees_gps: '14.8680°N, 15.8950°W',
+      notes: 'Village à l\'ouest, flux en hausse.',
+    },
+    {
+      id: 25,
+      nom: 'PAV Darou Alimoul Khabir',
+      type: 'point_apport_volontaire',
+      statut: 'actif',
+      lat: 14.8800,
+      lng: -15.8800,
+      adresse: 'Place centrale, Darou Alimoul Khabir',
+      quartier: 'Darou Alimoul Khabir',
+      niveau_quartier: 'village',
+      capacite_m3: 4,
+      taux_remplissage: 45,
+      frequence_collecte: '3x/semaine',
+      responsable: 'Comité dahira locale',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-23 07:00',
+      prochaine_collecte: '2026-06-25 07:00',
+      types_dechets: ['Résidus ménagers organiques'],
+      coordonnees_gps: '14.8800°N, 15.8800°W',
+      notes: 'Village organisé, comité actif.',
+    },
+    {
+      id: 26,
+      nom: 'Bac Alia',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8820,
+      lng: -15.8860,
+      adresse: 'Centre village Alia',
+      quartier: 'Alia',
+      niveau_quartier: 'village',
+      capacite_m3: 4,
+      taux_remplissage: 38,
+      frequence_collecte: '3x/semaine',
+      responsable: 'Comité de village',
+      phase_active: ['normale', 'pre-magal'],
+      derniere_collecte: '2026-06-23 08:00',
+      prochaine_collecte: '2026-06-25 08:00',
+      types_dechets: ['Ordures ménagères'],
+      coordonnees_gps: '14.8820°N, 15.8860°W',
+      notes: 'Village périphérique nord.',
+    },
+    {
+      id: 27,
+      nom: 'PAV Arifina',
+      type: 'point_apport_volontaire',
+      statut: 'actif',
+      lat: 14.8750,
+      lng: -15.8900,
+      adresse: 'Arifina, rue centrale',
+      quartier: 'Arifina',
+      niveau_quartier: 'village',
+      capacite_m3: 3,
+      taux_remplissage: 42,
+      frequence_collecte: '2x/semaine',
+      responsable: 'GIE Arifina',
+      phase_active: ['normale', 'pre-magal'],
+      derniere_collecte: '2026-06-23 08:00',
+      prochaine_collecte: '2026-06-26 08:00',
+      types_dechets: ['Déchets ménagers organiques'],
+      coordonnees_gps: '14.8750°N, 15.8900°W',
+      notes: 'GIE féminin actif.',
+    },
+    {
+      id: 28,
+      nom: 'Bac Ndamatou 1',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8680,
+      lng: -15.8680,
+      adresse: 'Ndamatou 1, avenue principale',
+      quartier: 'Ndamatou 1',
+      niveau_quartier: 'village',
+      capacite_m3: 8,
+      taux_remplissage: 61,
+      frequence_collecte: 'Quotidienne',
+      responsable: 'Mairie de Touba',
+      phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
+      derniere_collecte: '2026-06-24 07:00',
+      prochaine_collecte: '2026-06-25 07:00',
+      types_dechets: ['Ordures ménagères', 'Résidus de cuisine'],
+      coordonnees_gps: '14.8680°N, 15.8680°W',
+      notes: 'Village dynamique, collecte régulière.',
+    },
+    {
+      id: 29,
+      nom: 'Bac Same Lah',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8640,
+      lng: -15.8730,
+      adresse: 'Same Lah, carrefour central',
+      quartier: 'Same Lah',
+      niveau_quartier: 'village',
+      capacite_m3: 5,
+      taux_remplissage: 56,
+      frequence_collecte: 'Quotidienne',
+      responsable: 'CADAK-CAR',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-24 07:00',
+      prochaine_collecte: '2026-06-25 07:00',
+      types_dechets: ['Ordures ménagères'],
+      coordonnees_gps: '14.8640°N, 15.8730°W',
+      notes: 'Zone commerçante locale.',
+    },
+    {
+      id: 30,
+      nom: 'Bac Touba Al Azhar',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8590,
+      lng: -15.8700,
+      adresse: 'Avenue Touba Al Azhar',
+      quartier: 'Touba Al Azhar',
+      niveau_quartier: 'village',
+      capacite_m3: 6,
+      taux_remplissage: 53,
+      frequence_collecte: 'Quotidienne',
+      responsable: 'Mairie de Touba',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-24 06:30',
+      prochaine_collecte: '2026-06-25 06:30',
+      types_dechets: ['Ordures ménagères', 'Déchets organiques'],
+      coordonnees_gps: '14.8590°N, 15.8700°W',
+      notes: 'Quartier résidentiel structuré.',
+    },
+    {
+      id: 31,
+      nom: 'PAV Touba HLM',
+      type: 'point_apport_volontaire',
+      statut: 'actif',
+      lat: 14.8760,
+      lng: -15.8550,
+      adresse: 'Touba HLM, allée centrale',
+      quartier: 'Touba HLM',
+      niveau_quartier: 'village',
+      capacite_m3: 5,
+      taux_remplissage: 44,
+      frequence_collecte: '3x/semaine',
+      responsable: 'Syndicat résidents HLM',
+      phase_active: ['normale', 'pre-magal'],
+      derniere_collecte: '2026-06-23 08:00',
+      prochaine_collecte: '2026-06-25 08:00',
+      types_dechets: ['Déchets ménagers résidentiels'],
+      coordonnees_gps: '14.8760°N, 15.8550°W',
+      notes: 'Quartier résidentiel planifié. Bonne organisation.',
+    },
+    {
+      id: 32,
+      nom: 'Bac Route de Darou Mousty',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8550,
+      lng: -15.8550,
+      adresse: 'Axe route de Darou Mousty',
+      quartier: 'Route de Darou Mousty',
+      niveau_quartier: 'village',
+      capacite_m3: 8,
+      taux_remplissage: 67,
+      frequence_collecte: 'Quotidienne',
+      responsable: 'CADAK-CAR',
+      phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
+      derniere_collecte: '2026-06-24 07:00',
+      prochaine_collecte: '2026-06-25 07:00',
+      types_dechets: ['Déchets route', 'Ordures ménagères', 'Résidus commerce'],
+      coordonnees_gps: '14.8550°N, 15.8550°W',
+      notes: 'Axe routier majeur. Fort trafic lors du Magal.',
+    },
+    {
+      id: 33,
+      nom: 'Bac Boustanoul',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8720,
+      lng: -15.8760,
+      adresse: 'Village Boustanoul',
+      quartier: 'Boustanoul',
+      niveau_quartier: 'village',
+      capacite_m3: 4,
+      taux_remplissage: 33,
+      frequence_collecte: '2x/semaine',
+      responsable: 'Comité de village',
+      phase_active: ['normale', 'pre-magal'],
+      derniere_collecte: '2026-06-23 08:30',
+      prochaine_collecte: '2026-06-26 08:30',
+      types_dechets: ['Déchets ménagers'],
+      coordonnees_gps: '14.8720°N, 15.8760°W',
+      notes: 'Petit village bien organisé.',
+    },
+    {
+      id: 34,
+      nom: 'PAV Ndindy Abdou',
+      type: 'point_apport_volontaire',
+      statut: 'actif',
+      lat: 14.8740,
+      lng: -15.8580,
+      adresse: 'Ndindy Abdou, place publique',
+      quartier: 'Ndindy Abdou',
+      niveau_quartier: 'village',
+      capacite_m3: 3,
+      taux_remplissage: 29,
+      frequence_collecte: '2x/semaine',
+      responsable: 'Association jeunesse',
+      phase_active: ['normale'],
+      derniere_collecte: '2026-06-23 09:00',
+      prochaine_collecte: '2026-06-26 09:00',
+      types_dechets: ['Déchets ménagers organiques'],
+      coordonnees_gps: '14.8740°N, 15.8580°W',
+      notes: 'Association de jeunes dynamique.',
+    },
+    {
+      id: 35,
+      nom: 'Bac Darou Salam Ndame',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8690,
+      lng: -15.8620,
+      adresse: 'Darou Salam Ndame',
+      quartier: 'Darou Salam Ndame',
+      niveau_quartier: 'village',
+      capacite_m3: 5,
+      taux_remplissage: 50,
+      frequence_collecte: '3x/semaine',
+      responsable: 'Mairie de Touba',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-23 07:00',
+      prochaine_collecte: '2026-06-25 07:00',
+      types_dechets: ['Ordures ménagères', 'Résidus organiques'],
+      coordonnees_gps: '14.8690°N, 15.8620°W',
+      notes: 'Extension récente de Ndame.',
+    },
+    // ══════════════════════════════════════════════════════════════
+    // ZONES PÉRIPHÉRIQUES EST
+    // ══════════════════════════════════════════════════════════════
+    {
+      id: 36,
+      nom: 'Bac Touba Bagdad',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8610,
+      lng: -15.8570,
+      adresse: 'Avenue principale Touba Bagdad',
+      quartier: 'Touba Bagdad',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 8,
+      taux_remplissage: 74,
+      frequence_collecte: 'Quotidienne',
+      responsable: 'CADAK-CAR',
+      phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
+      derniere_collecte: '2026-06-24 07:00',
+      prochaine_collecte: '2026-06-25 07:00',
+      types_dechets: ['Ordures ménagères', 'Déchets organiques'],
+      coordonnees_gps: '14.8610°N, 15.8570°W',
+      notes: 'Quartier récent en forte croissance démographique.',
+    },
+    {
+      id: 37,
+      nom: 'Bac Mbacké Bâri',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8510,
+      lng: -15.8400,
+      adresse: 'Centre Mbacké Bâri',
+      quartier: 'Mbacké Bâri',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 6,
+      taux_remplissage: 58,
+      frequence_collecte: '3x/semaine',
+      responsable: 'Mairie de Touba',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-23 08:00',
+      prochaine_collecte: '2026-06-25 08:00',
+      types_dechets: ['Ordures ménagères'],
+      coordonnees_gps: '14.8510°N, 15.8400°W',
+      notes: 'Zone périphérique est.',
+    },
+    {
+      id: 38,
+      nom: 'PAV Touba Wadane',
+      type: 'point_apport_volontaire',
+      statut: 'actif',
+      lat: 14.8900,
+      lng: -15.8700,
+      adresse: 'Touba Wadane, carrefour',
+      quartier: 'Touba Wadane',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 5,
+      taux_remplissage: 36,
+      frequence_collecte: '2x/semaine',
+      responsable: 'Comité de quartier',
+      phase_active: ['normale', 'pre-magal'],
+      derniere_collecte: '2026-06-23 08:00',
+      prochaine_collecte: '2026-06-26 08:00',
+      types_dechets: ['Déchets ménagers'],
+      coordonnees_gps: '14.8900°N, 15.8700°W',
+      notes: 'Zone nord en développement.',
+    },
+    {
+      id: 39,
+      nom: 'Bac Diakhaye',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8480,
+      lng: -15.8600,
+      adresse: 'Village Diakhaye',
+      quartier: 'Diakhaye',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 4,
+      taux_remplissage: 41,
+      frequence_collecte: '2x/semaine',
+      responsable: 'Comité de village',
+      phase_active: ['normale', 'pre-magal'],
+      derniere_collecte: '2026-06-23 09:00',
+      prochaine_collecte: '2026-06-26 09:00',
+      types_dechets: ['Ordures ménagères', 'Résidus agricoles'],
+      coordonnees_gps: '14.8480°N, 15.8600°W',
+      notes: 'Village rural semi-intégré.',
+    },
+    {
+      id: 40,
+      nom: 'Bac NDindy',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8830,
+      lng: -15.8580,
+      adresse: 'NDindy, avenue principale',
+      quartier: 'NDindy',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 5,
+      taux_remplissage: 46,
+      frequence_collecte: '3x/semaine',
+      responsable: 'GIE NDindy',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-23 07:30',
+      prochaine_collecte: '2026-06-25 07:30',
+      types_dechets: ['Ordures ménagères'],
+      coordonnees_gps: '14.8830°N, 15.8580°W',
+      notes: 'Zone nord-est.',
+    },
+    {
+      id: 41,
+      nom: 'Bac Taif',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8460,
+      lng: -15.8750,
+      adresse: 'Taif, rue principale',
+      quartier: 'Taif',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 5,
+      taux_remplissage: 39,
+      frequence_collecte: '2x/semaine',
+      responsable: 'Mairie de Touba',
+      phase_active: ['normale', 'pre-magal'],
+      derniere_collecte: '2026-06-23 09:00',
+      prochaine_collecte: '2026-06-26 09:00',
+      types_dechets: ['Ordures ménagères'],
+      coordonnees_gps: '14.8460°N, 15.8750°W',
+      notes: 'Quartier sud en extension.',
+    },
+    // ══════════════════════════════════════════════════════════════
+    // ZONES PÉRIPHÉRIQUES — Nouveaux quartiers
+    // ══════════════════════════════════════════════════════════════
+    {
+      id: 42,
+      nom: 'PAV Touba Ndiarème',
+      type: 'point_apport_volontaire',
+      statut: 'actif',
+      lat: 14.8880,
+      lng: -15.8550,
+      adresse: 'Touba Ndiarème, place centrale',
+      quartier: 'Touba Ndiarème',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 4,
+      taux_remplissage: 32,
+      frequence_collecte: '2x/semaine',
+      responsable: 'Association résidents',
+      phase_active: ['normale', 'pre-magal'],
+      derniere_collecte: '2026-06-23 09:00',
+      prochaine_collecte: '2026-06-26 09:00',
+      types_dechets: ['Déchets ménagers résidentiels'],
+      coordonnees_gps: '14.8880°N, 15.8550°W',
+      notes: 'Nouveau quartier résidentiel.',
+    },
+    {
+      id: 43,
+      nom: 'Bac Bélel',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8540,
+      lng: -15.8480,
+      adresse: 'Bélel, axe principal',
+      quartier: 'Bélel',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 4,
+      taux_remplissage: 35,
+      frequence_collecte: '2x/semaine',
+      responsable: 'Mairie de Touba',
+      phase_active: ['normale', 'pre-magal'],
+      derniere_collecte: '2026-06-23 09:00',
+      prochaine_collecte: '2026-06-26 09:00',
+      types_dechets: ['Ordures ménagères'],
+      coordonnees_gps: '14.8540°N, 15.8480°W',
+      notes: 'Zone est, faible densité.',
+    },
+    {
+      id: 44,
+      nom: 'Bac Sourah',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8920,
+      lng: -15.8600,
+      adresse: 'Sourah, route principale',
+      quartier: 'Sourah',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 5,
+      taux_remplissage: 43,
+      frequence_collecte: '3x/semaine',
+      responsable: 'Comité de quartier',
+      phase_active: ['normale', 'pre-magal'],
+      derniere_collecte: '2026-06-23 08:00',
+      prochaine_collecte: '2026-06-25 08:00',
+      types_dechets: ['Ordures ménagères'],
+      coordonnees_gps: '14.8920°N, 15.8600°W',
+      notes: 'Quartier nord récent.',
+    },
+    {
+      id: 45,
+      nom: 'Bac Mbal',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8430,
+      lng: -15.8900,
+      adresse: 'Mbal, carrefour',
+      quartier: 'Mbal',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 4,
+      taux_remplissage: 28,
+      frequence_collecte: '2x/semaine',
+      responsable: 'GIE Mbal',
+      phase_active: ['normale'],
+      derniere_collecte: '2026-06-22 09:00',
+      prochaine_collecte: '2026-06-26 09:00',
+      types_dechets: ['Ordures ménagères', 'Résidus agricoles'],
+      coordonnees_gps: '14.8430°N, 15.8900°W',
+      notes: 'Zone rurale en voie d\'urbanisation.',
+    },
+    // ══════════════════════════════════════════════════════════════
+    // AUTRES ZONES PÉRIPHÉRIQUES
+    // ══════════════════════════════════════════════════════════════
+    {
+      id: 46,
+      nom: 'Bac Loyène',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8480,
+      lng: -15.8980,
+      adresse: 'Loyène, route de Mbacké',
+      quartier: 'Loyène',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 6,
+      taux_remplissage: 52,
+      frequence_collecte: '3x/semaine',
+      responsable: 'CADAK-CAR',
+      phase_active: ['normale', 'pre-magal', 'magal'],
+      derniere_collecte: '2026-06-23 08:00',
+      prochaine_collecte: '2026-06-25 08:00',
+      types_dechets: ['Ordures ménagères'],
+      coordonnees_gps: '14.8480°N, 15.8980°W',
+      notes: 'Zone sud-ouest, axe Mbacké.',
+    },
+    {
+      id: 47,
+      nom: 'Bac Kenya',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8950,
+      lng: -15.8750,
+      adresse: 'Kenya, avenue principale',
+      quartier: 'Kenya',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 5,
+      taux_remplissage: 37,
+      frequence_collecte: '2x/semaine',
+      responsable: 'Association Kenya',
+      phase_active: ['normale', 'pre-magal'],
+      derniere_collecte: '2026-06-23 08:30',
+      prochaine_collecte: '2026-06-26 08:30',
+      types_dechets: ['Déchets ménagers'],
+      coordonnees_gps: '14.8950°N, 15.8750°W',
+      notes: 'Quartier nord-ouest.',
+    },
+    {
+      id: 48,
+      nom: 'Bac Djibock',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8400,
+      lng: -15.8700,
+      adresse: 'Djibock, centre',
+      quartier: 'Djibock',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 4,
+      taux_remplissage: 30,
+      frequence_collecte: '2x/semaine',
+      responsable: 'Comité de village',
+      phase_active: ['normale'],
+      derniere_collecte: '2026-06-22 09:00',
+      prochaine_collecte: '2026-06-25 09:00',
+      types_dechets: ['Ordures ménagères', 'Résidus agricoles'],
+      coordonnees_gps: '14.8400°N, 15.8700°W',
+      notes: 'Village rural méridional.',
+    },
+    {
+      id: 49,
+      nom: 'Bac Lyndiane',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8560,
+      lng: -15.9050,
+      adresse: 'Lyndiane, zone périphérique',
+      quartier: 'Lyndiane',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 5,
+      taux_remplissage: 45,
+      frequence_collecte: '2x/semaine',
+      responsable: 'Mairie de Touba',
+      phase_active: ['normale', 'pre-magal'],
+      derniere_collecte: '2026-06-23 09:00',
+      prochaine_collecte: '2026-06-26 09:00',
+      types_dechets: ['Ordures ménagères'],
+      coordonnees_gps: '14.8560°N, 15.9050°W',
+      notes: 'Zone sud-ouest lointaine.',
+    },
+    {
+      id: 50,
+      nom: 'Bac Diabir',
+      type: 'bac_ordures',
+      statut: 'actif',
+      lat: 14.8950,
+      lng: -15.8450,
+      adresse: 'Diabir, route principale',
+      quartier: 'Diabir',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 4,
+      taux_remplissage: 34,
+      frequence_collecte: '2x/semaine',
+      responsable: 'GIE Diabir',
+      phase_active: ['normale'],
+      derniere_collecte: '2026-06-22 09:00',
+      prochaine_collecte: '2026-06-25 09:00',
+      types_dechets: ['Ordures ménagères'],
+      coordonnees_gps: '14.8950°N, 15.8450°W',
+      notes: 'Zone nord-est éloignée.',
+    },
+    // ══════════════════════════════════════════════════════════════
+    // SITES DE VALORISATION & SPÉCIAUX
+    // ══════════════════════════════════════════════════════════════
+    {
+      id: 51,
+      nom: 'Unité Biogaz Route Mbacké',
       type: 'unite_biogaz',
       statut: 'actif',
-      lat: 14.852,
-      lng: -15.898,
+      lat: 14.8520,
+      lng: -15.8980,
       adresse: 'Route de Mbacké, km 3',
-      quartier: 'Périphérie Ouest',
+      quartier: 'Keur Niang',
+      niveau_quartier: 'historique',
       capacite_m3: 200,
       taux_remplissage: 42,
       frequence_collecte: 'Quotidienne',
@@ -475,29 +1443,199 @@ function getPointsCollecte() {
       prochaine_collecte: '2026-06-25 06:00',
       types_dechets: ['Déchets organiques mixtes', 'Lisier', 'Graisses alimentaires'],
       coordonnees_gps: '14.8520°N, 15.8980°W',
-      photos: [],
-      notes: "Unité pilote biogaz. Production d'énergie pour ~50 foyers.",
+      notes: "Unité pilote biogaz. Production pour ~50 foyers.",
     },
     {
-      id: 12,
-      nom: 'Bac Quartier Touba Mosquée',
+      id: 52,
+      nom: 'PAV Université Cheikhoul Khadim',
+      type: 'point_apport_volontaire',
+      statut: 'actif',
+      lat: 14.8820,
+      lng: -15.8690,
+      adresse: 'Campus UCK, zone universitaire',
+      quartier: 'Touba Wadane',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 3,
+      taux_remplissage: 28,
+      frequence_collecte: '3x/semaine',
+      responsable: 'Club Environnement UCK',
+      phase_active: ['normale'],
+      derniere_collecte: '2026-06-23 12:00',
+      prochaine_collecte: '2026-06-25 12:00',
+      types_dechets: ['Déchets restauration univ.', 'Résidus organiques'],
+      coordonnees_gps: '14.8820°N, 15.8690°W',
+      notes: "Initiative étudiante. Jardin compost du campus.",
+    },
+    {
+      id: 53,
+      nom: 'Bac Marché Bétail',
       type: 'bac_ordures',
       statut: 'actif',
-      lat: 14.866,
-      lng: -15.883,
-      adresse: 'Touba Mosquée, rue des daharas',
-      quartier: 'Touba Mosquée',
-      capacite_m3: 8,
-      taux_remplissage: 55,
+      lat: 14.8480,
+      lng: -15.8650,
+      adresse: 'Marché à bétail, périphérie Sud',
+      quartier: 'Diakhaye',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 15,
+      taux_remplissage: 62,
       frequence_collecte: 'Quotidienne',
-      responsable: 'Dahira locale',
+      responsable: 'Services Vétérinaires + Mairie',
       phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
-      derniere_collecte: '2026-06-24 07:00',
-      prochaine_collecte: '2026-06-25 07:00',
-      types_dechets: ['Déchets de cuisine', 'Résidus organiques', 'Déchets daharas'],
-      coordonnees_gps: '14.8660°N, 15.8830°W',
-      photos: [],
-      notes: 'Proche des grandes daharas. Flux organique important lors des zawiyahs.',
+      derniere_collecte: '2026-06-24 07:30',
+      prochaine_collecte: '2026-06-25 07:30',
+      types_dechets: ['Fumier', 'Résidus organiques animaux', 'Déchets verts'],
+      coordonnees_gps: '14.8480°N, 15.8650°W',
+      notes: 'Source importante de biomasse pour biogaz.',
+    },
+    {
+      id: 54,
+      nom: 'Centre de Tri Secondaire Est',
+      type: 'centre_tri',
+      statut: 'actif',
+      lat: 14.8620,
+      lng: -15.8530,
+      adresse: 'Zone industrielle Est Touba',
+      quartier: 'Mbacké Bâri',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 50,
+      taux_remplissage: 38,
+      frequence_collecte: 'Quotidienne',
+      responsable: 'Mairie de Touba',
+      phase_active: ['normale', 'pre-magal', 'magal', 'post-magal'],
+      derniere_collecte: '2026-06-24 05:00',
+      prochaine_collecte: '2026-06-25 05:00',
+      types_dechets: ['Fraction organique', 'Matières recyclables'],
+      coordonnees_gps: '14.8620°N, 15.8530°W',
+      notes: 'Centre de tri secondaire pour zone est.',
+    },
+    {
+      id: 55,
+      nom: 'Plateforme Compostage Sud',
+      type: 'plateforme_compostage',
+      statut: 'actif',
+      lat: 14.8440,
+      lng: -15.8820,
+      adresse: 'Périphérie sud Touba',
+      quartier: 'Taif',
+      niveau_quartier: 'peripherique',
+      capacite_m3: 80,
+      taux_remplissage: 25,
+      frequence_collecte: 'Hebdomadaire',
+      responsable: 'ONG Green Touba',
+      phase_active: ['normale', 'post-magal'],
+      derniere_collecte: '2026-06-21 09:00',
+      prochaine_collecte: '2026-06-28 09:00',
+      types_dechets: ['Déchets verts', 'Matières organiques'],
+      coordonnees_gps: '14.8440°N, 15.8820°W',
+      notes: 'Nouveau site compostage zone sud.',
+    },
+    // ══════════════════════════════════════════════════════════════
+    // POINTS TEMPORAIRES MAGAL (actifs uniquement en période Magal)
+    // ══════════════════════════════════════════════════════════════
+    {
+      id: 56,
+      nom: 'Point Magal — Axe Nord Grande Mosquée',
+      type: 'bac_ordures',
+      statut: 'inactif',
+      lat: 14.8715,
+      lng: -15.8825,
+      adresse: 'Axe pèlerinage Nord Mosquée',
+      quartier: 'Touba Mosquée',
+      niveau_quartier: 'historique',
+      capacite_m3: 5,
+      taux_remplissage: 0,
+      frequence_collecte: 'Magal uniquement',
+      responsable: 'Comité Magal Environnement',
+      phase_active: ['magal'],
+      derniere_collecte: 'N/A',
+      prochaine_collecte: 'Avant Magal 2026',
+      types_dechets: ['Déchets pèlerins', 'Résidus repas communautaires'],
+      coordonnees_gps: '14.8715°N, 15.8825°W',
+      notes: 'Bac temporaire déployé uniquement pendant le Magal.',
+    },
+    {
+      id: 57,
+      nom: 'Point Magal — Axe Darou Khoudoss',
+      type: 'bac_ordures',
+      statut: 'inactif',
+      lat: 14.8750,
+      lng: -15.8795,
+      adresse: 'Axe pèlerinage Darou Khoudoss',
+      quartier: 'Darou Khoudoss',
+      niveau_quartier: 'historique',
+      capacite_m3: 5,
+      taux_remplissage: 0,
+      frequence_collecte: 'Magal uniquement',
+      responsable: 'Comité Magal Environnement',
+      phase_active: ['magal'],
+      derniere_collecte: 'N/A',
+      prochaine_collecte: 'Avant Magal 2026',
+      types_dechets: ['Déchets pèlerins'],
+      coordonnees_gps: '14.8750°N, 15.8795°W',
+      notes: 'Déployé uniquement pendant le Grand Magal.',
+    },
+    {
+      id: 58,
+      nom: 'Point Magal — Gouye Mbind',
+      type: 'bac_ordures',
+      statut: 'inactif',
+      lat: 14.8608,
+      lng: -15.8858,
+      adresse: 'Axe pèlerinage Gouye Mbind',
+      quartier: 'Gouye Mbind',
+      niveau_quartier: 'historique',
+      capacite_m3: 5,
+      taux_remplissage: 0,
+      frequence_collecte: 'Magal uniquement',
+      responsable: 'Comité Magal Environnement',
+      phase_active: ['magal'],
+      derniere_collecte: 'N/A',
+      prochaine_collecte: 'Avant Magal 2026',
+      types_dechets: ['Déchets pèlerins', 'Restes repas daharas'],
+      coordonnees_gps: '14.8608°N, 15.8858°W',
+      notes: 'Point temporaire axe pèlerinage ouest.',
+    },
+    {
+      id: 59,
+      nom: 'PAV École Samer',
+      type: 'point_apport_volontaire',
+      statut: 'actif',
+      lat: 14.8635,
+      lng: -15.8745,
+      adresse: 'École Samer, allée est',
+      quartier: 'Samer',
+      niveau_quartier: 'historique',
+      capacite_m3: 2,
+      taux_remplissage: 22,
+      frequence_collecte: '2x/semaine',
+      responsable: 'APE Samer',
+      phase_active: ['normale'],
+      derniere_collecte: '2026-06-23 08:00',
+      prochaine_collecte: '2026-06-26 08:00',
+      types_dechets: ['Déchets scolaires'],
+      coordonnees_gps: '14.8635°N, 15.8745°W',
+      notes: 'Programme éducation environnementale.',
+    },
+    {
+      id: 60,
+      nom: 'Centre Collecte Dianatoul Mahwa',
+      type: 'centre_tri',
+      statut: 'en_construction',
+      lat: 14.8598,
+      lng: -15.8792,
+      adresse: 'Zone nord-est, Dianatoul Mahwa',
+      quartier: 'Dianatoul Mahwa',
+      niveau_quartier: 'historique',
+      capacite_m3: 30,
+      taux_remplissage: 0,
+      frequence_collecte: 'Prévu Quotidienne',
+      responsable: 'Mairie de Touba',
+      phase_active: ['pre-magal', 'magal', 'post-magal'],
+      derniere_collecte: 'N/A',
+      prochaine_collecte: 'Ouverture prévue 2026-Q3',
+      types_dechets: ['Déchets organiques triés'],
+      coordonnees_gps: '14.8598°N, 15.8792°W',
+      notes: 'En construction. Inauguration prévue Q3 2026.',
     },
   ]
 }
@@ -1131,6 +2269,14 @@ function getMainHtml(): string {
           <div class="stat-value" id="stat-remplissage">—</div>
           <div class="stat-label">Remplissage moyen</div>
         </div>
+        <div class="stat-card" style="background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3)">
+          <div class="stat-value" id="stat-quartiers" style="color:#f59e0b">—</div>
+          <div class="stat-label">Quartiers couverts</div>
+        </div>
+        <div class="stat-card" style="background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.3)">
+          <div class="stat-value" id="stat-critiques" style="color:#ef4444">—</div>
+          <div class="stat-label">⚠️ Bacs critiques (≥80%)</div>
+        </div>
       </div>
     </div>
 
@@ -1163,6 +2309,48 @@ function getMainHtml(): string {
           <option value="pre-magal">🔔 Pré-Magal (J-30)</option>
           <option value="magal">🕌 Pendant le Magal</option>
           <option value="post-magal">✔️ Post-Magal</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label class="filter-label">Niveau de quartier</label>
+        <select class="filter-select" id="filter-niveau" onchange="applyFilters()">
+          <option value="">Tous les niveaux</option>
+          <option value="historique">🏛️ Quartiers historiques (13)</option>
+          <option value="village">🏘️ Villages urbains (25)</option>
+          <option value="peripherique">🌐 Zones périphériques (15+)</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label class="filter-label">Quartier spécifique</label>
+        <select class="filter-select" id="filter-quartier" onchange="applyFilters()">
+          <option value="">Tous les quartiers</option>
+          <optgroup label="── Quartiers historiques ──">
+            <option>Darou Khoudoss</option><option>Gouye Mbind</option>
+            <option>Darou Miname</option><option>Touba Guédé</option>
+            <option>Touba Mosquée</option><option>Keur Niang</option>
+            <option>Khaira</option><option>Guédé Bousso</option>
+            <option>Samer</option><option>Darou Marnane</option>
+            <option>Ndame</option><option>Madiyana</option>
+            <option>Dianatoul Mahwa</option>
+          </optgroup>
+          <optgroup label="── Villages urbains ──">
+            <option>Alia</option><option>Arifina</option>
+            <option>Boukhatoul Moubarak</option><option>Boustanoul</option>
+            <option>Darou Alimoul Khabir</option><option>Darou Khadim</option>
+            <option>Darou Marnane 2</option><option>Darou Salam Ndame</option>
+            <option>Ndindy Abdou</option><option>Ndamatou 1</option>
+            <option>Route de Darou Mousty</option><option>Same Lah</option>
+            <option>Touba Al Azhar</option><option>Touba HLM</option>
+          </optgroup>
+          <optgroup label="── Zones périphériques ──">
+            <option>Touba Bagdad</option><option>Mbacké Bâri</option>
+            <option>Touba Wadane</option><option>Diakhaye</option>
+            <option>NDindy</option><option>Taif</option>
+            <option>Touba Ndiarème</option><option>Bélel</option>
+            <option>Sourah</option><option>Mbal</option>
+            <option>Loyène</option><option>Kenya</option>
+            <option>Djibock</option><option>Lyndiane</option><option>Diabir</option>
+          </optgroup>
         </select>
       </div>
     </div>
@@ -1217,6 +2405,16 @@ function getMainHtml(): string {
         </div>
         <label class="toggle-switch">
           <input type="checkbox" id="layer-routes" onchange="toggleLayer('routes')">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="layer-item">
+        <div class="layer-info">
+          <div class="layer-dot" style="background:#f59e0b;border:2px solid #92400e"></div>
+          <span class="layer-name">Centres de quartiers</span>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="layer-quartiers" onchange="toggleLayer('quartiers')">
           <span class="toggle-slider"></span>
         </label>
       </div>
@@ -1316,8 +2514,9 @@ function getMainHtml(): string {
 // ÉTAT GLOBAL
 // ═══════════════════════════════════════════════════════════════════════
 let map, allPoints = [], allRestaurants = [], allProjets = []
-let layerGroups = { collecte: null, restaurants: null, projets: null, heatmap: null }
-let activeFilters = { type: '', statut: ['actif', 'inactif'], phase: '' }
+let layerGroups = { collecte: null, restaurants: null, projets: null, heatmap: null, quartiers: null }
+let allQuartiers = []
+let activeFilters = { type: '', statut: ['actif', 'inactif', 'en_construction'], phase: '', niveau: '', quartier: '' }
 let selectedPointId = null
 
 const TYPE_CONFIG = {
@@ -1699,17 +2898,26 @@ async function loadProtocole() {
 // FILTRES
 // ═══════════════════════════════════════════════════════════════════════
 function applyFilters() {
-  const typeVal = document.getElementById('filter-type').value
-  const phaseVal = document.getElementById('filter-phase').value
+  const typeVal    = document.getElementById('filter-type').value
+  const phaseVal   = document.getElementById('filter-phase').value
+  const niveauVal  = document.getElementById('filter-niveau').value
+  const quartierVal= document.getElementById('filter-quartier').value
 
   let filtered = allPoints.filter(p => {
     if (typeVal && p.type !== typeVal) return false
     if (!activeFilters.statut.includes(p.statut)) return false
     if (phaseVal && !p.phase_active?.includes(phaseVal)) return false
+    if (niveauVal && p.niveau_quartier !== niveauVal) return false
+    if (quartierVal && p.quartier !== quartierVal) return false
     return true
   })
 
   renderPoints(filtered)
+
+  // Mettre à jour le badge de résultats
+  const badge = document.getElementById('filter-count')
+  if (badge) badge.textContent = filtered.length < allPoints.length
+    ? \`\${filtered.length}/\${allPoints.length}\` : allPoints.length
 }
 
 function toggleStatus(btn, status) {
@@ -1788,6 +2996,10 @@ async function loadStats() {
   document.getElementById('stat-actifs').textContent = s.actifs
   document.getElementById('stat-capacite').textContent = s.capacite_totale_m3
   document.getElementById('stat-remplissage').textContent = s.remplissage_moyen_pct + '%'
+  if (document.getElementById('stat-quartiers'))
+    document.getElementById('stat-quartiers').textContent = s.total_quartiers || '—'
+  if (document.getElementById('stat-critiques'))
+    document.getElementById('stat-critiques').textContent = s.points_critiques || 0
 
   const pc = PHASE_CONFIG[s.phase_magal] || PHASE_CONFIG.normale
   const pi = document.getElementById('phase-indicator')
@@ -1810,9 +3022,45 @@ async function loadPoints() {
   addHeatmapCircles()
 }
 
+async function loadQuartiers() {
+  try {
+    const resp = await axios.get('/api/quartiers')
+    allQuartiers = resp.data.data
+    layerGroups.quartiers = L.layerGroup()
+
+    const NIVEAU_COLORS = {
+      historique:  { fill: '#fef08a', stroke: '#ca8a04', size: 18 },
+      village:     { fill: '#bfdbfe', stroke: '#3b82f6', size: 14 },
+      peripherique:{ fill: '#fce7f3', stroke: '#ec4899', size: 11 },
+    }
+
+    allQuartiers.forEach(q => {
+      const cfg = NIVEAU_COLORS[q.niveau] || NIVEAU_COLORS.peripherique
+      const marker = L.circleMarker([q.lat, q.lng], {
+        radius: cfg.size,
+        fillColor: cfg.fill,
+        color: cfg.stroke,
+        weight: 2,
+        opacity: 0.9,
+        fillOpacity: 0.5,
+      })
+      const niveauLabel = q.niveau === 'historique' ? 'Historique' : q.niveau === 'village' ? 'Village urbain' : 'Périphérique'
+      marker.bindTooltip(\`
+        <div style="font-family:Inter,sans-serif;padding:4px 6px">
+          <div style="font-weight:700;font-size:13px">\${q.nom}</div>
+          <div style="color:#6b7280;font-size:11px">\${niveauLabel}</div>
+          <div style="font-size:11px;margin-top:2px">
+            ~\${q.population_est?.toLocaleString()} hab. &bull; \${q.superficie_km2} km²
+          </div>
+        </div>\`, { direction: 'top', offset: [0, -6] })
+      layerGroups.quartiers.addLayer(marker)
+    })
+  } catch (e) { console.warn('Quartiers non chargés', e) }
+}
+
 async function init() {
   initMap()
-  await Promise.all([loadStats(), loadPoints(), loadRestaurants(), loadProjets(), loadProtocole()])
+  await Promise.all([loadStats(), loadPoints(), loadRestaurants(), loadProjets(), loadProtocole(), loadQuartiers()])
 }
 
 // Démarrage
@@ -2229,12 +3477,54 @@ function getAgentPwaHtml(): string {
         <div class="form-group">
           <label class="form-label">Zone d'intervention</label>
           <select class="form-select" id="profil-zone">
-            <option>Centre Touba</option>
-            <option>Darou Khoudoss</option>
-            <option>Darou Marnane</option>
-            <option>Gouye Mbind</option>
-            <option>Ndamatou</option>
-            <option>Keur Niang</option>
+            <optgroup label="── Quartiers historiques ──">
+              <option>Darou Khoudoss</option>
+              <option>Gouye Mbind</option>
+              <option>Darou Miname</option>
+              <option>Touba Guédé</option>
+              <option>Touba Mosquée</option>
+              <option>Keur Niang</option>
+              <option>Khaira</option>
+              <option>Guédé Bousso</option>
+              <option>Samer</option>
+              <option>Darou Marnane</option>
+              <option>Ndame</option>
+              <option>Madiyana</option>
+              <option>Dianatoul Mahwa</option>
+            </optgroup>
+            <optgroup label="── Villages urbains ──">
+              <option>Alia</option>
+              <option>Arifina</option>
+              <option>Boukhatoul Moubarak</option>
+              <option>Boustanoul</option>
+              <option>Darou Alimoul Khabir</option>
+              <option>Darou Khadim</option>
+              <option>Darou Marnane 2</option>
+              <option>Darou Salam Ndame</option>
+              <option>Ndindy Abdou</option>
+              <option>Ndamatou 1</option>
+              <option>Route de Darou Mousty</option>
+              <option>Same Lah</option>
+              <option>Touba Al Azhar</option>
+              <option>Touba HLM</option>
+            </optgroup>
+            <optgroup label="── Zones périphériques ──">
+              <option>Touba Bagdad</option>
+              <option>Mbacké Bâri</option>
+              <option>Touba Wadane</option>
+              <option>Diakhaye</option>
+              <option>NDindy</option>
+              <option>Taif</option>
+              <option>Touba Ndiarème</option>
+              <option>Bélel</option>
+              <option>Sourah</option>
+              <option>Mbal</option>
+              <option>Loyène</option>
+              <option>Kenya</option>
+              <option>Djibock</option>
+              <option>Lyndiane</option>
+              <option>Diabir</option>
+            </optgroup>
           </select>
         </div>
         <div class="form-group">
@@ -2783,10 +4073,21 @@ function getExportHtml(): string {
         <div class="card-title">Points de collecte</div>
         <div class="card-desc">Tous les points de collecte de déchets organiques avec attributs complets (type, statut, capacité, taux remplissage, responsable…)</div>
         <div class="card-meta">
-          <span class="meta-tag">GeoJSON</span><span class="meta-tag">WGS84</span><span class="meta-tag">12 entités</span>
+          <span class="meta-tag">GeoJSON</span><span class="meta-tag">WGS84</span><span class="meta-tag">60 entités</span>
         </div>
         <button class="btn-download btn-green" onclick="downloadGeoJson('points')">
           <i class="fas fa-download"></i> Télécharger points.geojson
+        </button>
+      </div>
+      <div class="export-card">
+        <div class="card-icon" style="background:rgba(245,158,11,.15)">🗺️</div>
+        <div class="card-title">Centres de quartiers</div>
+        <div class="card-desc">Centroïdes des 42 quartiers (13 historiques + 14 villages + 15 périphériques) avec population estimée, superficie et niveau administratif.</div>
+        <div class="card-meta">
+          <span class="meta-tag">GeoJSON</span><span class="meta-tag">WGS84</span><span class="meta-tag">42 entités</span>
+        </div>
+        <button class="btn-download btn-orange" onclick="downloadGeoJson('quartiers')">
+          <i class="fas fa-download"></i> Télécharger quartiers.geojson
         </button>
       </div>
       <div class="export-card">
@@ -2814,9 +4115,9 @@ function getExportHtml(): string {
       <div class="export-card">
         <div class="card-icon" style="background:rgba(124,58,237,.15)">🗂️</div>
         <div class="card-title">Toutes les couches</div>
-        <div class="card-desc">FeatureCollection complète combinant points de collecte, restaurants et projets dans un seul fichier GeoJSON.</div>
+        <div class="card-desc">FeatureCollection complète : 60 points de collecte + 42 quartiers + restaurants + projets dans un seul fichier GeoJSON.</div>
         <div class="card-meta">
-          <span class="meta-tag">GeoJSON</span><span class="meta-tag">WGS84</span><span class="meta-tag">21 entités</span>
+          <span class="meta-tag">GeoJSON</span><span class="meta-tag">WGS84</span><span class="meta-tag">111 entités</span>
         </div>
         <button class="btn-download btn-purple" onclick="downloadGeoJson('all')">
           <i class="fas fa-download"></i> Télécharger toutes_couches.geojson
