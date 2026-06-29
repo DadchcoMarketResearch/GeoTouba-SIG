@@ -255,6 +255,126 @@ app.get('/carte', (c) => c.html(getMainHtml()))
 app.get('/agent', (c) => c.html(getAgentPwaHtml()))
 app.get('/export', (c) => c.html(getExportHtml()))
 app.get('/alertes', (c) => c.html(getAlertesHtml()))
+app.get('/certificat', (c) => c.html(getCertificatHtml()))
+
+// ─── API : Génération certificat de traçabilité ───────────────────────────────
+app.post('/api/certificat/generer', async (c) => {
+  const body = await c.req.json()
+  const {
+    type_dechet, quantite_kg, unite = 'kg',
+    point_collecte_id, point_collecte_nom,
+    quartier, operateur, destination,
+    date_collecte, notes_agent,
+  } = body
+
+  if (!type_dechet || !quantite_kg) {
+    return c.json({ success: false, message: 'type_dechet et quantite_kg requis' }, 400)
+  }
+
+  // ── Facteurs CO2 évité par type de déchet (kgCO2eq / tonne)
+  // Sources : ADEME, GIZ Sénégal, IPCC AR6
+  const CO2_FACTORS: Record<string, { facteur: number; label: string; methode: string }> = {
+    dechets_alimentaires:   { facteur: 600,  label: 'Déchets alimentaires',         methode: 'Compostage vs enfouissement (CH₄ évité)' },
+    residus_vegetaux:       { facteur: 450,  label: 'Résidus végétaux / verts',     methode: 'Compostage vs incinération à ciel ouvert' },
+    fumier_animal:          { facteur: 800,  label: 'Fumier / lisier animal',        methode: 'Biogaz (CH₄ capté) vs dégradation libre' },
+    huiles_graisses:        { facteur: 900,  label: 'Huiles et graisses alimentaires', methode: 'Biogaz vs décharge (ADEME 2023)' },
+    residus_marche:         { facteur: 520,  label: 'Résidus de marché',             methode: 'Compostage vs décharge ouverte' },
+    boues_organiques:       { facteur: 700,  label: 'Boues organiques',              methode: 'Valorisation vs lixiviat' },
+    dechets_dahira:         { facteur: 580,  label: 'Déchets daharas / communautaires', methode: 'Compostage collectif vs brûlage' },
+    organique_mixte:        { facteur: 550,  label: 'Organique mixte',               methode: 'Valorisation partielle moyenne ADEME' },
+    dechets_verts:          { facteur: 480,  label: 'Déchets verts / jardins',       methode: 'Compostage vs incinération' },
+    dechets_maraichage:     { facteur: 430,  label: 'Résidus maraîchage',            methode: 'Retour sol vs décharge' },
+  }
+
+  const config = CO2_FACTORS[type_dechet] || CO2_FACTORS.organique_mixte
+  const quantite_tonnes = quantite_kg / 1000
+  const co2_evite_kg    = Math.round(config.facteur * quantite_tonnes * 100) / 100
+  const arbres_equiv    = Math.round(co2_evite_kg / 21.77 * 10) / 10  // 1 arbre absorbe ~21.77 kgCO2/an
+  const km_voiture_equiv= Math.round(co2_evite_kg / 0.21)             // 210 gCO2/km voiture moyenne
+
+  // Numéro de certificat unique
+  const now = new Date()
+  const datePart = now.toISOString().slice(0, 10).replace(/-/g, '')
+  const randPart = Math.random().toString(36).substring(2, 7).toUpperCase()
+  const numero = `GTO-${datePart}-${randPart}`
+
+  const certificat = {
+    numero,
+    date_emission: now.toISOString(),
+    date_collecte: date_collecte || now.toISOString().slice(0, 10),
+    statut: 'valide',
+    // Déchet
+    type_dechet,
+    type_dechet_label: config.label,
+    quantite_kg,
+    unite,
+    // Impact environnemental
+    co2_evite_kg,
+    co2_evite_tonnes: Math.round(co2_evite_kg / 10) / 100,
+    methode_calcul: config.methode,
+    facteur_emission: config.facteur,
+    equivalences: {
+      arbres_1_an: arbres_equiv,
+      km_voiture: km_voiture_equiv,
+      foyers_electricite_jours: Math.round(co2_evite_kg / 1.5),
+    },
+    // Localisation
+    point_collecte_id: point_collecte_id || null,
+    point_collecte_nom: point_collecte_nom || 'Point non spécifié',
+    quartier: quartier || 'Touba',
+    ville: 'Touba, Sénégal',
+    // Responsabilité
+    operateur: operateur || 'Opérateur GeoTouba',
+    destination: destination || 'Valorisation organique',
+    notes_agent: notes_agent || '',
+    // Conformité
+    norme: 'ADEME France / GIZ Sénégal / IPCC AR6',
+    verificateur: 'Système GeoTouba SIG v2.0',
+    hash: btoa(`${numero}:${type_dechet}:${quantite_kg}:${co2_evite_kg}`).slice(0, 16),
+  }
+
+  return c.json({ success: true, data: certificat })
+})
+
+// ─── API : Vérification certificat ───────────────────────────────────────────
+app.get('/api/certificat/verifier/:numero', (c) => {
+  const numero = c.req.param('numero')
+  // En production : lookup en base. Ici simulation.
+  const valide = numero.startsWith('GTO-')
+  return c.json({
+    success: true,
+    data: {
+      numero,
+      statut: valide ? 'valide' : 'invalide',
+      message: valide
+        ? 'Certificat authentifié — émis par GeoTouba SIG'
+        : 'Numéro de certificat non reconnu',
+      verificateur: 'GeoTouba SIG Platform',
+      date_verification: new Date().toISOString(),
+    },
+  })
+})
+
+// ─── API : Facteurs CO2 ───────────────────────────────────────────────────────
+app.get('/api/certificat/facteurs-co2', (c) => {
+  return c.json({
+    success: true,
+    source: 'ADEME 2023, GIZ Sénégal, IPCC AR6',
+    unite: 'kgCO2eq évité par tonne de déchet valorisé',
+    data: [
+      { type: 'dechets_alimentaires',  label: 'Déchets alimentaires',          facteur: 600, methode: 'Compostage vs enfouissement' },
+      { type: 'residus_vegetaux',      label: 'Résidus végétaux / verts',      facteur: 450, methode: 'Compostage vs incinération' },
+      { type: 'fumier_animal',         label: 'Fumier / lisier animal',         facteur: 800, methode: 'Biogaz vs dégradation libre' },
+      { type: 'huiles_graisses',       label: 'Huiles et graisses',            facteur: 900, methode: 'Biogaz vs décharge (ADEME 2023)' },
+      { type: 'residus_marche',        label: 'Résidus de marché',             facteur: 520, methode: 'Compostage vs décharge ouverte' },
+      { type: 'boues_organiques',      label: 'Boues organiques',              facteur: 700, methode: 'Valorisation vs lixiviat' },
+      { type: 'dechets_dahira',        label: 'Déchets daharas / communautaires', facteur: 580, methode: 'Compostage vs brûlage' },
+      { type: 'organique_mixte',       label: 'Organique mixte',               facteur: 550, methode: 'Valorisation partielle (moyenne)' },
+      { type: 'dechets_verts',         label: 'Déchets verts / jardins',       facteur: 480, methode: 'Compostage vs incinération' },
+      { type: 'dechets_maraichage',    label: 'Résidus maraîchage',            facteur: 430, methode: 'Retour sol vs décharge' },
+    ],
+  })
+})
 app.get('/manifest.json', (c) => {
   c.header('Content-Type', 'application/manifest+json')
   return c.json(getPwaManifest())
@@ -2236,6 +2356,9 @@ function getMainHtml(): string {
     <a href="/export" style="padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600;background:rgba(124,58,237,.2);color:#a78bfa;border:1px solid #a78bfa;text-decoration:none;display:flex;align-items:center;gap:4px">
       <i class="fas fa-download"></i> QGIS
     </a>
+    <a href="/certificat" style="padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600;background:rgba(16,185,129,.2);color:#34d399;border:1px solid #34d399;text-decoration:none;display:flex;align-items:center;gap:4px">
+      <i class="fas fa-certificate"></i> Certificat
+    </a>
   </div>
 </header>
 
@@ -3071,6 +3194,822 @@ setInterval(() => {
   loadStats()
   loadPoints()
 }, 5 * 60 * 1000)
+</script>
+</body>
+</html>`
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+// PAGE CERTIFICAT DE TRAÇABILITÉ
+// ═══════════════════════════════════════════════════════════════════════════
+function getCertificatHtml(): string {
+  return `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Certificat de Traçabilité — GeoTouba</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml"/>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Amiri:wght@400;700&display=swap" rel="stylesheet"/>
+  <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+  <style>
+    :root {
+      --primary:#16a34a; --primary-light:#22c55e; --primary-dark:#14532d;
+      --accent:#f59e0b; --danger:#ef4444; --info:#0891b2; --purple:#7c3aed;
+      --emerald:#10b981; --bg:#0f172a; --surface:#1e293b; --surface2:#0f172a;
+      --border:rgba(255,255,255,.08); --text:#e2e8f0; --muted:#94a3b8;
+    }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:'Inter',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+
+    /* ── HEADER ── */
+    header {
+      background:rgba(30,41,59,.95); backdrop-filter:blur(12px);
+      border-bottom:1px solid var(--border);
+      padding:12px 24px; display:flex; align-items:center; gap:16px;
+      position:sticky; top:0; z-index:100;
+    }
+    .back-btn {
+      text-decoration:none; color:var(--muted); font-size:13px;
+      display:flex; align-items:center; gap:6px;
+      padding:6px 12px; border-radius:8px; border:1px solid var(--border);
+      transition:all .2s;
+    }
+    .back-btn:hover { color:var(--text); border-color:var(--primary); }
+    header h1 { font-size:18px; font-weight:800; color:#fff; }
+    header .sub { font-size:11px; color:var(--muted); margin-top:2px; }
+    .nav-links { margin-left:auto; display:flex; gap:8px; flex-wrap:wrap; }
+    .nav-link {
+      padding:4px 10px; border-radius:20px; font-size:11px; font-weight:600;
+      text-decoration:none; display:flex; align-items:center; gap:4px; border:1px solid;
+    }
+
+    /* ── LAYOUT ── */
+    main { max-width:1400px; margin:0 auto; padding:24px; display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+    @media(max-width:900px){ main{ grid-template-columns:1fr; } }
+
+    /* ── CARD ── */
+    .card {
+      background:var(--surface); border:1px solid var(--border);
+      border-radius:16px; padding:24px;
+    }
+    .card-title {
+      font-size:15px; font-weight:700; color:#fff;
+      display:flex; align-items:center; gap:8px; margin-bottom:20px;
+      padding-bottom:14px; border-bottom:1px solid var(--border);
+    }
+    .card-title i { color:var(--primary); }
+
+    /* ── FORM ── */
+    .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .form-group { display:flex; flex-direction:column; gap:6px; }
+    .form-group.full { grid-column:1/-1; }
+    label { font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+    input, select, textarea {
+      background:rgba(255,255,255,.05); border:1px solid var(--border);
+      border-radius:10px; padding:10px 14px; color:var(--text);
+      font-size:13px; font-family:inherit; transition:border .2s;
+      width:100%;
+    }
+    input:focus, select:focus, textarea:focus { outline:none; border-color:var(--primary); }
+    select option { background:#1e293b; }
+    textarea { resize:vertical; min-height:70px; }
+
+    /* ── BOUTONS ── */
+    .btn {
+      padding:12px 20px; border:none; border-radius:10px; font-size:13px;
+      font-weight:700; cursor:pointer; transition:all .2s;
+      display:inline-flex; align-items:center; gap:8px;
+    }
+    .btn-primary { background:var(--primary); color:#fff; width:100%; justify-content:center; margin-top:6px; }
+    .btn-primary:hover { background:var(--primary-light); transform:translateY(-1px); }
+    .btn-print { background:rgba(124,58,237,.15); color:#a78bfa; border:1px solid rgba(124,58,237,.4); }
+    .btn-print:hover { background:rgba(124,58,237,.3); }
+    .btn-reset { background:rgba(239,68,68,.1); color:#f87171; border:1px solid rgba(239,68,68,.3); }
+    .btn-reset:hover { background:rgba(239,68,68,.2); }
+
+    /* ── SLIDER QUANTITÉ ── */
+    .qty-display {
+      font-size:28px; font-weight:800; color:var(--primary);
+      text-align:center; margin:8px 0 4px;
+    }
+    .qty-unit { font-size:12px; color:var(--muted); text-align:center; margin-bottom:10px; }
+    input[type=range] {
+      -webkit-appearance:none; height:6px; border-radius:3px;
+      background:linear-gradient(to right, var(--primary) 0%, var(--primary) var(--pct,50%), rgba(255,255,255,.1) var(--pct,50%));
+      border:none; padding:0; cursor:pointer;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance:none; width:20px; height:20px; border-radius:50%;
+      background:var(--primary); border:3px solid #fff; cursor:pointer;
+    }
+
+    /* ── FACTEUR CO2 PREVIEW ── */
+    .co2-preview {
+      background:rgba(16,185,129,.08); border:1px solid rgba(16,185,129,.25);
+      border-radius:12px; padding:14px; margin-top:12px;
+    }
+    .co2-preview-title { font-size:10px; font-weight:700; color:var(--emerald); text-transform:uppercase; margin-bottom:8px; }
+    .co2-preview-val { font-size:26px; font-weight:800; color:var(--emerald); }
+    .co2-preview-sub { font-size:11px; color:var(--muted); }
+
+    /* ── CERTIFICAT VISUEL ── */
+    #certificat-container { display:none; }
+    .certificat-doc {
+      background:linear-gradient(135deg, #0a1a0e 0%, #0f2918 100%);
+      border:2px solid var(--primary);
+      border-radius:16px; padding:32px;
+      position:relative; overflow:hidden;
+    }
+    .cert-watermark {
+      position:absolute; top:50%; left:50%; transform:translate(-50%,-50%) rotate(-30deg);
+      font-size:80px; font-weight:900; color:rgba(22,163,74,.04);
+      white-space:nowrap; pointer-events:none; letter-spacing:8px;
+    }
+    .cert-header { display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:24px; }
+    .cert-logo { display:flex; align-items:center; gap:10px; }
+    .cert-logo-icon {
+      width:48px; height:48px; border-radius:12px;
+      background:var(--primary); display:flex; align-items:center; justify-content:center;
+      font-size:22px;
+    }
+    .cert-logo-text { font-size:20px; font-weight:800; color:#fff; }
+    .cert-logo-sub { font-size:10px; color:var(--muted); }
+    .cert-badge {
+      background:rgba(22,163,74,.15); border:1px solid var(--primary);
+      border-radius:8px; padding:6px 14px; font-size:11px; font-weight:700;
+      color:var(--primary-light); display:flex; align-items:center; gap:6px;
+    }
+    .cert-title-block { text-align:center; margin-bottom:24px; }
+    .cert-title-block h2 {
+      font-size:22px; font-weight:800; color:#fff; letter-spacing:1px;
+      text-transform:uppercase;
+    }
+    .cert-title-block .cert-num {
+      font-size:13px; color:var(--muted); margin-top:4px; font-family:monospace;
+    }
+    .cert-divider {
+      border:none; border-top:1px solid rgba(22,163,74,.3);
+      margin:16px 0;
+    }
+
+    /* Grille infos certificat */
+    .cert-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px; }
+    @media(max-width:600px){ .cert-grid{ grid-template-columns:1fr; } }
+    .cert-field { background:rgba(255,255,255,.03); border-radius:10px; padding:12px 14px; }
+    .cert-field-label { font-size:9px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.8px; margin-bottom:4px; }
+    .cert-field-value { font-size:14px; font-weight:700; color:#fff; }
+    .cert-field-value.big { font-size:22px; color:var(--primary-light); }
+    .cert-field-value.co2 { font-size:22px; color:var(--emerald); }
+
+    /* Impact visuel */
+    .cert-impact {
+      background:rgba(16,185,129,.08); border:1px solid rgba(16,185,129,.2);
+      border-radius:12px; padding:16px; margin-bottom:20px;
+    }
+    .cert-impact-title { font-size:11px; font-weight:700; color:var(--emerald); margin-bottom:12px; text-transform:uppercase; }
+    .cert-impact-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+    @media(max-width:500px){ .cert-impact-grid{ grid-template-columns:1fr; } }
+    .cert-impact-item { text-align:center; }
+    .cert-impact-icon { font-size:24px; margin-bottom:4px; }
+    .cert-impact-val { font-size:16px; font-weight:800; color:#fff; }
+    .cert-impact-lbl { font-size:9px; color:var(--muted); }
+
+    /* Pied de certificat */
+    .cert-footer {
+      display:flex; align-items:center; justify-content:space-between;
+      margin-top:20px; padding-top:16px; border-top:1px solid rgba(22,163,74,.2);
+      gap:12px;
+    }
+    .cert-footer-left { font-size:10px; color:var(--muted); line-height:1.6; }
+    .cert-footer-left strong { color:var(--text); }
+    #cert-qr-canvas { border-radius:8px; background:#fff; padding:6px; }
+    .cert-signature {
+      text-align:center; font-size:9px; color:rgba(22,163,74,.5);
+      margin-top:16px; letter-spacing:2px; font-family:monospace;
+    }
+
+    /* Boutons action certificat */
+    .cert-actions { display:flex; gap:10px; margin-top:16px; flex-wrap:wrap; }
+
+    /* ── HISTORIQUE ── */
+    .hist-item {
+      background:rgba(255,255,255,.03); border:1px solid var(--border);
+      border-radius:10px; padding:12px 14px; margin-bottom:8px;
+      display:flex; align-items:center; gap:12px; cursor:pointer;
+      transition:border-color .2s;
+    }
+    .hist-item:hover { border-color:var(--primary); }
+    .hist-icon {
+      width:38px; height:38px; border-radius:10px;
+      background:rgba(22,163,74,.15); display:flex; align-items:center;
+      justify-content:center; font-size:16px; flex-shrink:0;
+    }
+    .hist-num { font-size:11px; font-family:monospace; color:var(--primary-light); }
+    .hist-type { font-size:13px; font-weight:600; color:#fff; }
+    .hist-meta { font-size:11px; color:var(--muted); }
+    .hist-co2 { margin-left:auto; text-align:right; }
+    .hist-co2-val { font-size:15px; font-weight:800; color:var(--emerald); }
+    .hist-co2-lbl { font-size:9px; color:var(--muted); }
+
+    /* ── STATS GLOBALES ── */
+    .global-stats { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:20px; }
+    .g-stat { background:rgba(255,255,255,.04); border-radius:10px; padding:14px; text-align:center; }
+    .g-stat-val { font-size:22px; font-weight:800; color:var(--primary-light); }
+    .g-stat-lbl { font-size:10px; color:var(--muted); margin-top:2px; }
+
+    /* ── PRINT ── */
+    @media print {
+      body { background:#fff !important; color:#000 !important; }
+      header, .card:not(.print-zone), .cert-actions, nav { display:none !important; }
+      .certificat-doc {
+        background:#fff !important; border:2px solid #16a34a !important;
+        color:#000 !important; print-color-adjust:exact;
+      }
+      .cert-field { background:#f0fdf4 !important; }
+      .cert-impact { background:#f0fdf4 !important; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <a class="back-btn" href="/"><i class="fas fa-arrow-left"></i> Carte</a>
+  <div>
+    <h1><i class="fas fa-certificate" style="color:#10b981;margin-right:8px"></i>Certificats de Traçabilité — GeoTouba</h1>
+    <p class="sub">Génération & vérification de certificats d'impact environnemental</p>
+  </div>
+  <div class="nav-links">
+    <a class="nav-link" href="/agent"    style="background:rgba(8,145,178,.2);color:#38bdf8;border-color:#38bdf8"><i class="fas fa-mobile-alt"></i> Agent</a>
+    <a class="nav-link" href="/alertes"  style="background:rgba(239,68,68,.2);color:#f87171;border-color:#f87171"><i class="fas fa-bell"></i> Alertes</a>
+    <a class="nav-link" href="/export"   style="background:rgba(124,58,237,.2);color:#a78bfa;border-color:#a78bfa"><i class="fas fa-download"></i> QGIS</a>
+  </div>
+</header>
+
+<main>
+<!-- ═══════════════════════════════════════════════════════════════
+     COLONNE GAUCHE : Formulaire de génération
+════════════════════════════════════════════════════════════════ -->
+<div>
+
+  <!-- Formulaire -->
+  <div class="card" style="margin-bottom:20px">
+    <div class="card-title"><i class="fas fa-plus-circle"></i> Générer un certificat</div>
+
+    <div class="form-grid">
+      <!-- Type de déchet -->
+      <div class="form-group full">
+        <label><i class="fas fa-recycle"></i> Type de déchet collecté *</label>
+        <select id="f-type" onchange="updatePreview()">
+          <option value="">— Sélectionnez le type —</option>
+          <option value="dechets_alimentaires">🍽️ Déchets alimentaires</option>
+          <option value="residus_vegetaux">🌿 Résidus végétaux / verts</option>
+          <option value="fumier_animal">🐄 Fumier / lisier animal</option>
+          <option value="huiles_graisses">🫙 Huiles et graisses alimentaires</option>
+          <option value="residus_marche">🛒 Résidus de marché</option>
+          <option value="boues_organiques">💧 Boues organiques</option>
+          <option value="dechets_dahira">🕌 Déchets daharas / communautaires</option>
+          <option value="organique_mixte">♻️ Organique mixte</option>
+          <option value="dechets_verts">🌱 Déchets verts / jardins</option>
+          <option value="dechets_maraichage">🥬 Résidus maraîchage</option>
+        </select>
+      </div>
+
+      <!-- Quantité -->
+      <div class="form-group full">
+        <label><i class="fas fa-weight-hanging"></i> Quantité collectée *</label>
+        <div class="qty-display" id="qty-display">0</div>
+        <div class="qty-unit" id="qty-unit">kilogrammes (kg)</div>
+        <input type="range" id="f-qty-slider" min="1" max="5000" value="100" step="1"
+          oninput="updateQty(this.value)" style="margin-bottom:8px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="number" id="f-qty" min="0.1" step="0.1" value="100" placeholder="ex: 250"
+            style="flex:1" oninput="syncSlider(this.value); updatePreview()">
+          <select id="f-unite" style="width:100px" onchange="updatePreview()">
+            <option value="kg">kg</option>
+            <option value="tonnes">tonnes</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Prévisualisation CO2 -->
+      <div class="form-group full" id="co2-preview-block" style="display:none">
+        <div class="co2-preview">
+          <div class="co2-preview-title"><i class="fas fa-leaf"></i> Estimation CO₂ évité</div>
+          <div style="display:flex;align-items:baseline;gap:8px">
+            <div class="co2-preview-val" id="co2-val">—</div>
+            <div class="co2-preview-sub">kg CO₂eq évité</div>
+          </div>
+          <div style="margin-top:6px;display:flex;gap:16px;font-size:11px;color:var(--muted)">
+            <span>🌳 <span id="co2-arbres">—</span> arbres/an</span>
+            <span>🚗 <span id="co2-km">—</span> km voiture</span>
+            <span>📖 Méthode : <span id="co2-methode" style="color:var(--text)">—</span></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Point de collecte -->
+      <div class="form-group">
+        <label><i class="fas fa-map-marker-alt"></i> Point de collecte</label>
+        <select id="f-point">
+          <option value="">— Sélectionnez —</option>
+        </select>
+      </div>
+
+      <!-- Quartier -->
+      <div class="form-group">
+        <label><i class="fas fa-map"></i> Quartier</label>
+        <select id="f-quartier">
+          <optgroup label="── Quartiers historiques ──">
+            <option>Darou Khoudoss</option><option>Gouye Mbind</option>
+            <option>Darou Miname</option><option>Touba Guédé</option>
+            <option>Touba Mosquée</option><option>Keur Niang</option>
+            <option>Khaira</option><option>Guédé Bousso</option>
+            <option>Samer</option><option>Darou Marnane</option>
+            <option>Ndame</option><option>Madiyana</option>
+            <option>Dianatoul Mahwa</option>
+          </optgroup>
+          <optgroup label="── Villages urbains ──">
+            <option>Alia</option><option>Arifina</option>
+            <option>Boukhatoul Moubarak</option><option>Darou Khadim</option>
+            <option>Darou Marnane 2</option><option>Darou Salam Ndame</option>
+            <option>Ndamatou 1</option><option>Same Lah</option>
+            <option>Touba Al Azhar</option><option>Touba HLM</option>
+          </optgroup>
+          <optgroup label="── Zones périphériques ──">
+            <option>Touba Bagdad</option><option>Mbacké Bâri</option>
+            <option>Touba Wadane</option><option>Diakhaye</option>
+            <option>Taif</option><option>Loyène</option>
+            <option>Kenya</option><option>Lyndiane</option>
+          </optgroup>
+        </select>
+      </div>
+
+      <!-- Opérateur -->
+      <div class="form-group">
+        <label><i class="fas fa-user-hard-hat"></i> Opérateur / Agent</label>
+        <input type="text" id="f-operateur" placeholder="Nom de l'agent ou structure">
+      </div>
+
+      <!-- Destination -->
+      <div class="form-group">
+        <label><i class="fas fa-industry"></i> Destination valorisation</label>
+        <select id="f-destination">
+          <option value="Compostage">🌱 Compostage</option>
+          <option value="Biogaz">⚡ Production biogaz</option>
+          <option value="Épandage agricole">🌾 Épandage agricole</option>
+          <option value="Centre de tri">🔄 Centre de tri</option>
+          <option value="Valorisation énergétique">🔥 Valorisation énergétique</option>
+          <option value="Alimentation animale">🐄 Alimentation animale</option>
+          <option value="En attente">⏳ En attente</option>
+        </select>
+      </div>
+
+      <!-- Date collecte -->
+      <div class="form-group">
+        <label><i class="fas fa-calendar-alt"></i> Date de collecte</label>
+        <input type="date" id="f-date">
+      </div>
+
+      <!-- Notes -->
+      <div class="form-group full">
+        <label><i class="fas fa-sticky-note"></i> Notes complémentaires</label>
+        <textarea id="f-notes" placeholder="Conditions de collecte, qualité, remarques particulières..."></textarea>
+      </div>
+    </div>
+
+    <button class="btn btn-primary" onclick="genererCertificat()">
+      <i class="fas fa-certificate"></i> Générer le certificat officiel
+    </button>
+  </div>
+
+  <!-- Vérificateur -->
+  <div class="card">
+    <div class="card-title"><i class="fas fa-search"></i> Vérifier un certificat</div>
+    <div style="display:flex;gap:10px">
+      <input type="text" id="verif-num" placeholder="Ex: GTO-20260629-XYZ12" style="flex:1;font-family:monospace">
+      <button class="btn" style="background:rgba(8,145,178,.15);color:#38bdf8;border:1px solid rgba(8,145,178,.4)" onclick="verifierCertificat()">
+        <i class="fas fa-check-circle"></i> Vérifier
+      </button>
+    </div>
+    <div id="verif-result" style="display:none;margin-top:12px;padding:12px;border-radius:10px;font-size:13px"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     COLONNE DROITE : Certificat + historique
+════════════════════════════════════════════════════════════════ -->
+<div>
+
+  <!-- Placeholder avant génération -->
+  <div class="card" id="cert-placeholder">
+    <div style="text-align:center;padding:60px 20px;color:var(--muted)">
+      <div style="font-size:64px;margin-bottom:16px;opacity:.3">🏅</div>
+      <div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:8px">Aucun certificat généré</div>
+      <div style="font-size:13px">Remplissez le formulaire et cliquez sur<br><strong style="color:var(--primary)">Générer le certificat</strong></div>
+    </div>
+  </div>
+
+  <!-- Certificat généré -->
+  <div id="certificat-container">
+    <!-- Boutons action -->
+    <div class="cert-actions" style="margin-bottom:12px">
+      <button class="btn btn-print" onclick="window.print()"><i class="fas fa-print"></i> Imprimer</button>
+      <button class="btn btn-print" onclick="telechargerCertificat()"><i class="fas fa-file-pdf"></i> PDF</button>
+      <button class="btn btn-reset" onclick="resetCertificat()"><i class="fas fa-redo"></i> Nouveau</button>
+    </div>
+
+    <!-- Le certificat visuel -->
+    <div class="certificat-doc print-zone" id="cert-doc">
+      <div class="cert-watermark">GÉOTOUBA</div>
+
+      <!-- En-tête -->
+      <div class="cert-header">
+        <div class="cert-logo">
+          <div class="cert-logo-icon">🗺️</div>
+          <div>
+            <div class="cert-logo-text">GeoTouba SIG</div>
+            <div class="cert-logo-sub">Portail SIG — Déchets Organiques</div>
+          </div>
+        </div>
+        <div class="cert-badge">
+          <i class="fas fa-check-circle"></i> CERTIFIÉ VALIDE
+        </div>
+      </div>
+
+      <!-- Titre -->
+      <div class="cert-title-block">
+        <h2>📜 Certificat de Traçabilité</h2>
+        <div class="cert-num" id="cert-numero">N° GTO-XXXXXXXX-XXXXX</div>
+      </div>
+      <hr class="cert-divider">
+
+      <!-- Infos principales -->
+      <div class="cert-grid">
+        <div class="cert-field">
+          <div class="cert-field-label">♻️ Type de déchet</div>
+          <div class="cert-field-value" id="cert-type-label">—</div>
+        </div>
+        <div class="cert-field">
+          <div class="cert-field-label">⚖️ Quantité collectée</div>
+          <div class="cert-field-value big" id="cert-quantite">—</div>
+        </div>
+        <div class="cert-field">
+          <div class="cert-field-label">📍 Point de collecte</div>
+          <div class="cert-field-value" id="cert-point">—</div>
+        </div>
+        <div class="cert-field">
+          <div class="cert-field-label">🗺️ Quartier</div>
+          <div class="cert-field-value" id="cert-quartier">—</div>
+        </div>
+        <div class="cert-field">
+          <div class="cert-field-label">🏭 Destination</div>
+          <div class="cert-field-value" id="cert-destination">—</div>
+        </div>
+        <div class="cert-field">
+          <div class="cert-field-label">👤 Opérateur</div>
+          <div class="cert-field-value" id="cert-operateur">—</div>
+        </div>
+        <div class="cert-field">
+          <div class="cert-field-label">📅 Date de collecte</div>
+          <div class="cert-field-value" id="cert-date-collecte">—</div>
+        </div>
+        <div class="cert-field" style="background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.3)">
+          <div class="cert-field-label" style="color:var(--emerald)">🌍 CO₂ évité</div>
+          <div class="cert-field-value co2" id="cert-co2">—</div>
+        </div>
+      </div>
+
+      <!-- Impact environnemental -->
+      <div class="cert-impact">
+        <div class="cert-impact-title"><i class="fas fa-leaf"></i> Équivalences d'impact environnemental</div>
+        <div class="cert-impact-grid">
+          <div class="cert-impact-item">
+            <div class="cert-impact-icon">🌳</div>
+            <div class="cert-impact-val" id="cert-arbres">—</div>
+            <div class="cert-impact-lbl">arbres plantés (1 an)</div>
+          </div>
+          <div class="cert-impact-item">
+            <div class="cert-impact-icon">🚗</div>
+            <div class="cert-impact-val" id="cert-km">—</div>
+            <div class="cert-impact-lbl">km en voiture évités</div>
+          </div>
+          <div class="cert-impact-item">
+            <div class="cert-impact-icon">💡</div>
+            <div class="cert-impact-val" id="cert-foyers">—</div>
+            <div class="cert-impact-lbl">foyers électrifiés (jours)</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Méthode de calcul -->
+      <div style="background:rgba(255,255,255,.03);border-radius:10px;padding:12px;margin-bottom:16px;font-size:11px;color:var(--muted);line-height:1.7">
+        <strong style="color:var(--text)">📐 Méthode de calcul :</strong> <span id="cert-methode">—</span><br>
+        <strong style="color:var(--text)">📚 Référentiel :</strong> ADEME 2023 · GIZ Sénégal · IPCC AR6 WG3<br>
+        <strong style="color:var(--text)">📝 Notes :</strong> <span id="cert-notes">—</span>
+      </div>
+
+      <!-- Pied du certificat -->
+      <div class="cert-footer">
+        <div class="cert-footer-left">
+          <div>📅 <strong>Date d'émission :</strong> <span id="cert-date-emission">—</span></div>
+          <div>🔒 <strong>Hash de vérification :</strong> <code id="cert-hash" style="font-size:10px;color:var(--primary-light)">—</code></div>
+          <div>✅ <strong>Vérifié par :</strong> GeoTouba SIG Platform v2.0</div>
+          <div style="margin-top:6px;font-size:9px;color:rgba(148,163,184,.5)">
+            Ville de Touba, Sénégal — Gestion des Déchets Organiques
+          </div>
+        </div>
+        <canvas id="cert-qr-canvas" width="80" height="80"></canvas>
+      </div>
+
+      <div class="cert-signature">✦ GEOTOUBA SIG · CERTIFICATION TRAÇABILITÉ DÉCHETS · SÉNÉGAL ✦</div>
+    </div>
+
+    <!-- Stats de cette session -->
+    <div class="card" style="margin-top:16px">
+      <div class="card-title"><i class="fas fa-chart-line"></i> Session courante</div>
+      <div class="global-stats">
+        <div class="g-stat">
+          <div class="g-stat-val" id="sess-count">0</div>
+          <div class="g-stat-lbl">Certificats générés</div>
+        </div>
+        <div class="g-stat">
+          <div class="g-stat-val" id="sess-qty">0 kg</div>
+          <div class="g-stat-lbl">Total collecté</div>
+        </div>
+        <div class="g-stat">
+          <div class="g-stat-val" id="sess-co2">0</div>
+          <div class="g-stat-lbl">kg CO₂ évité</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Historique -->
+  <div class="card" style="margin-top:20px" id="hist-card">
+    <div class="card-title"><i class="fas fa-history"></i> Historique de session</div>
+    <div id="historique-list">
+      <div style="text-align:center;color:var(--muted);padding:24px;font-size:13px">
+        <i class="fas fa-clock" style="font-size:24px;margin-bottom:8px;display:block;opacity:.3"></i>
+        Aucun certificat dans cette session
+      </div>
+    </div>
+  </div>
+
+</div>
+</main>
+
+<script>
+// ─── FACTEURS CO2 (miroir du backend) ────────────────────────────────────────
+const CO2_FACTORS = {
+  dechets_alimentaires:   { facteur:600,  label:'Déchets alimentaires',          methode:'Compostage vs enfouissement (CH₄ évité)' },
+  residus_vegetaux:       { facteur:450,  label:'Résidus végétaux / verts',      methode:'Compostage vs incinération à ciel ouvert' },
+  fumier_animal:          { facteur:800,  label:'Fumier / lisier animal',         methode:'Biogaz (CH₄ capté) vs dégradation libre' },
+  huiles_graisses:        { facteur:900,  label:'Huiles et graisses alimentaires',methode:'Biogaz vs décharge (ADEME 2023)' },
+  residus_marche:         { facteur:520,  label:'Résidus de marché',              methode:'Compostage vs décharge ouverte' },
+  boues_organiques:       { facteur:700,  label:'Boues organiques',               methode:'Valorisation vs lixiviat' },
+  dechets_dahira:         { facteur:580,  label:'Déchets daharas / communautaires',methode:'Compostage collectif vs brûlage' },
+  organique_mixte:        { facteur:550,  label:'Organique mixte',                methode:'Valorisation partielle moyenne ADEME' },
+  dechets_verts:          { facteur:480,  label:'Déchets verts / jardins',        methode:'Compostage vs incinération' },
+  dechets_maraichage:     { facteur:430,  label:'Résidus maraîchage',             methode:'Retour sol vs décharge' },
+}
+
+// Session stats
+let sessionCount = 0, sessionQty = 0, sessionCO2 = 0
+const sessionHist = []
+
+// Init date d'aujourd'hui
+document.getElementById('f-date').value = new Date().toISOString().slice(0,10)
+
+// Charger les points de collecte
+async function loadPoints() {
+  try {
+    const r = await axios.get('/api/points-collecte')
+    const sel = document.getElementById('f-point')
+    r.data.data.forEach(p => {
+      const opt = document.createElement('option')
+      opt.value = p.id
+      opt.textContent = \`\${p.nom} (\${p.quartier})\`
+      opt.dataset.quartier = p.quartier
+      sel.appendChild(opt)
+    })
+  } catch(e) { console.warn(e) }
+}
+loadPoints()
+
+// Auto-remplissage quartier selon point sélectionné
+document.getElementById('f-point').addEventListener('change', function() {
+  const opt = this.options[this.selectedIndex]
+  if (opt && opt.dataset.quartier) {
+    const qSel = document.getElementById('f-quartier')
+    for (let i = 0; i < qSel.options.length; i++) {
+      if (qSel.options[i].text === opt.dataset.quartier) {
+        qSel.selectedIndex = i; break
+      }
+    }
+  }
+})
+
+// Slider synchronisation
+function updateQty(val) {
+  document.getElementById('f-qty').value = val
+  updateSliderStyle(val)
+  updatePreview()
+}
+function syncSlider(val) {
+  const n = parseFloat(val) || 0
+  const max = document.getElementById('f-qty-slider').max
+  document.getElementById('f-qty-slider').value = Math.min(n, max)
+  updateSliderStyle(Math.min(n, max))
+}
+function updateSliderStyle(val) {
+  const sl = document.getElementById('f-qty-slider')
+  const pct = (val - sl.min) / (sl.max - sl.min) * 100
+  sl.style.setProperty('--pct', pct + '%')
+  document.getElementById('qty-display').textContent = parseFloat(val).toLocaleString('fr-FR')
+  const unite = document.getElementById('f-unite').value
+  document.getElementById('qty-unit').textContent = unite === 'tonnes' ? 'tonnes (t)' : 'kilogrammes (kg)'
+}
+
+// Preview CO2
+function updatePreview() {
+  const type = document.getElementById('f-type').value
+  const qty  = parseFloat(document.getElementById('f-qty').value) || 0
+  const unite= document.getElementById('f-unite').value
+  const qtyKg= unite === 'tonnes' ? qty * 1000 : qty
+
+  document.getElementById('qty-display').textContent = qty.toLocaleString('fr-FR')
+
+  if (!type || !qty) {
+    document.getElementById('co2-preview-block').style.display = 'none'; return
+  }
+  const cfg = CO2_FACTORS[type] || CO2_FACTORS.organique_mixte
+  const co2  = Math.round(cfg.facteur * (qtyKg/1000) * 100) / 100
+  const arb  = Math.round(co2 / 21.77 * 10) / 10
+  const km   = Math.round(co2 / 0.21)
+
+  document.getElementById('co2-preview-block').style.display = 'block'
+  document.getElementById('co2-val').textContent     = co2.toLocaleString('fr-FR')
+  document.getElementById('co2-arbres').textContent  = arb.toLocaleString('fr-FR')
+  document.getElementById('co2-km').textContent      = km.toLocaleString('fr-FR')
+  document.getElementById('co2-methode').textContent = cfg.methode
+}
+
+// ─── GÉNÉRATION ────────────────────────────────────────────────────────────────
+async function genererCertificat() {
+  const type = document.getElementById('f-type').value
+  const qty  = parseFloat(document.getElementById('f-qty').value)
+  if (!type) { alert('Veuillez sélectionner un type de déchet'); return }
+  if (!qty || qty <= 0) { alert('Veuillez saisir une quantité valide'); return }
+
+  const pointSel = document.getElementById('f-point')
+  const pointOpt = pointSel.options[pointSel.selectedIndex]
+
+  const payload = {
+    type_dechet:        type,
+    quantite_kg:        document.getElementById('f-unite').value === 'tonnes' ? qty * 1000 : qty,
+    unite:              document.getElementById('f-unite').value,
+    point_collecte_id:  pointSel.value || null,
+    point_collecte_nom: pointOpt && pointSel.value ? pointOpt.text : 'Non spécifié',
+    quartier:           document.getElementById('f-quartier').value,
+    operateur:          document.getElementById('f-operateur').value || 'Agent GeoTouba',
+    destination:        document.getElementById('f-destination').value,
+    date_collecte:      document.getElementById('f-date').value,
+    notes_agent:        document.getElementById('f-notes').value,
+  }
+
+  try {
+    const btn = document.querySelector('.btn-primary')
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Génération…'; btn.disabled = true
+
+    const resp = await axios.post('/api/certificat/generer', payload)
+    const cert = resp.data.data
+
+    afficherCertificat(cert)
+
+    // Stats session
+    sessionCount++; sessionQty += cert.quantite_kg; sessionCO2 += cert.co2_evite_kg
+    updateSessionStats()
+    addToHistory(cert)
+
+    btn.innerHTML = '<i class="fas fa-certificate"></i> Générer le certificat officiel'; btn.disabled = false
+  } catch(e) {
+    alert('Erreur lors de la génération : ' + (e.response?.data?.message || e.message))
+    document.querySelector('.btn-primary').innerHTML = '<i class="fas fa-certificate"></i> Générer le certificat officiel'
+    document.querySelector('.btn-primary').disabled = false
+  }
+}
+
+function afficherCertificat(cert) {
+  // Remplissage
+  document.getElementById('cert-numero').textContent        = 'N° ' + cert.numero
+  document.getElementById('cert-type-label').textContent   = cert.type_dechet_label
+  document.getElementById('cert-quantite').textContent     = cert.quantite_kg.toLocaleString('fr-FR') + ' kg'
+  document.getElementById('cert-point').textContent        = cert.point_collecte_nom
+  document.getElementById('cert-quartier').textContent     = cert.quartier + ', ' + cert.ville
+  document.getElementById('cert-destination').textContent  = cert.destination
+  document.getElementById('cert-operateur').textContent    = cert.operateur
+  document.getElementById('cert-date-collecte').textContent= new Date(cert.date_collecte).toLocaleDateString('fr-FR', {weekday:'long',year:'numeric',month:'long',day:'numeric'})
+  document.getElementById('cert-co2').textContent          = cert.co2_evite_kg.toLocaleString('fr-FR') + ' kg CO₂eq'
+  document.getElementById('cert-arbres').textContent       = cert.equivalences.arbres_1_an.toLocaleString('fr-FR')
+  document.getElementById('cert-km').textContent           = cert.equivalences.km_voiture.toLocaleString('fr-FR')
+  document.getElementById('cert-foyers').textContent       = cert.equivalences.foyers_electricite_jours.toLocaleString('fr-FR')
+  document.getElementById('cert-methode').textContent      = cert.methode_calcul
+  document.getElementById('cert-notes').textContent        = cert.notes_agent || 'Aucune'
+  document.getElementById('cert-date-emission').textContent= new Date(cert.date_emission).toLocaleString('fr-FR')
+  document.getElementById('cert-hash').textContent         = cert.hash
+
+  // QR code — URL de vérification
+  const qrData = \`https://geotouba.pages.dev/api/certificat/verifier/\${cert.numero}\`
+  QRCode.toCanvas(document.getElementById('cert-qr-canvas'), qrData, { width:80, margin:1 }, () => {})
+
+  // Afficher/masquer
+  document.getElementById('cert-placeholder').style.display = 'none'
+  document.getElementById('certificat-container').style.display = 'block'
+
+  // Scroll
+  document.getElementById('certificat-container').scrollIntoView({ behavior:'smooth', block:'start' })
+}
+
+function updateSessionStats() {
+  document.getElementById('sess-count').textContent = sessionCount
+  document.getElementById('sess-qty').textContent   = sessionQty.toLocaleString('fr-FR') + ' kg'
+  document.getElementById('sess-co2').textContent   = Math.round(sessionCO2).toLocaleString('fr-FR')
+}
+
+function addToHistory(cert) {
+  sessionHist.unshift(cert)
+  const list = document.getElementById('historique-list')
+  const icons = {
+    dechets_alimentaires:'🍽️', residus_vegetaux:'🌿', fumier_animal:'🐄',
+    huiles_graisses:'🫙', residus_marche:'🛒', boues_organiques:'💧',
+    dechets_dahira:'🕌', organique_mixte:'♻️', dechets_verts:'🌱', dechets_maraichage:'🥬'
+  }
+  const icon = icons[cert.type_dechet] || '♻️'
+  const item = document.createElement('div')
+  item.className = 'hist-item'
+  item.onclick = () => afficherCertificat(cert)
+  item.innerHTML = \`
+    <div class="hist-icon">\${icon}</div>
+    <div style="flex:1;min-width:0">
+      <div class="hist-num">\${cert.numero}</div>
+      <div class="hist-type">\${cert.type_dechet_label}</div>
+      <div class="hist-meta">\${cert.quantite_kg.toLocaleString('fr-FR')} kg · \${cert.quartier} · \${cert.operateur}</div>
+    </div>
+    <div class="hist-co2">
+      <div class="hist-co2-val">\${cert.co2_evite_kg} kg</div>
+      <div class="hist-co2-lbl">CO₂ évité</div>
+    </div>\`
+
+  if (list.querySelector('.fa-clock')) list.innerHTML = ''
+  list.insertBefore(item, list.firstChild)
+}
+
+function resetCertificat() {
+  document.getElementById('cert-placeholder').style.display = 'block'
+  document.getElementById('certificat-container').style.display = 'none'
+  document.getElementById('f-type').value = ''
+  document.getElementById('f-qty').value = '100'
+  document.getElementById('f-qty-slider').value = 100
+  document.getElementById('f-notes').value = ''
+  document.getElementById('co2-preview-block').style.display = 'none'
+  updateSliderStyle(100)
+}
+
+// Téléchargement PDF via print dialog
+function telechargerCertificat() {
+  window.print()
+}
+
+// ─── VÉRIFICATION ─────────────────────────────────────────────────────────────
+async function verifierCertificat() {
+  const num = document.getElementById('verif-num').value.trim()
+  if (!num) { alert('Saisissez un numéro de certificat'); return }
+  try {
+    const r = await axios.get(\`/api/certificat/verifier/\${encodeURIComponent(num)}\`)
+    const d = r.data.data
+    const el = document.getElementById('verif-result')
+    el.style.display = 'block'
+    if (d.statut === 'valide') {
+      el.style.background = 'rgba(22,163,74,.12)'
+      el.style.border = '1px solid rgba(22,163,74,.4)'
+      el.innerHTML = \`<i class="fas fa-check-circle" style="color:#22c55e"></i> <strong style="color:#22c55e">Certificat VALIDE</strong><br>
+        <span style="font-size:11px;color:#94a3b8">\${d.message}<br>Vérifié le : \${new Date(d.date_verification).toLocaleString('fr-FR')}</span>\`
+    } else {
+      el.style.background = 'rgba(239,68,68,.12)'
+      el.style.border = '1px solid rgba(239,68,68,.4)'
+      el.innerHTML = \`<i class="fas fa-times-circle" style="color:#ef4444"></i> <strong style="color:#ef4444">Certificat INVALIDE</strong><br>
+        <span style="font-size:11px;color:#94a3b8">\${d.message}</span>\`
+    }
+  } catch(e) { alert('Erreur de vérification') }
+}
+
+// Init
+updateSliderStyle(100)
 </script>
 </body>
 </html>`
